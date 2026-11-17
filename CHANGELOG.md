@@ -8,7 +8,7 @@ upgrade steps.
 
 Preview stages. Backwards compatible: nothing changes unless you set `preview: true`. Not yet proven on a real PR.
 - `app-ci.yml`: new inputs `preview` (default `false`) and `preview-comment` (default `true`). On a pull request whose head branch starts with `preview-branch-prefix` (default `preview/`; ordinary PRs get no preview) it deploys `pr-<n>` with the non-prod role, smoke-tests it, and posts/updates one comment with the URL. Skipped for Dependabot PRs (by PR author) and fork PRs.
-- A preview whose app links a secret that has no value on `pr-<n>` fails by design; the job now reports the secret name(s) and the exact `sst secret set ... --stage pr-<n>` command as an error annotation and in the job summary.
+- Previews inherit secret values from a base stage (input `preview-base-stage`, default `staging`; refuses production): the preview job copies them with `sst secret list`/`load` through a private temp file on every deploy. A secret missing on the base stage fails the deploy with an error naming the secret and the `sst secret set <NAME> <value> --stage staging` command.
 - New `preview-cleanup.yml`: removes `pr-<n>` on PR close (a no-op if the PR had no preview), deleting the stage's empty state object afterwards so the sweep does not repeat it, and on a schedule removes `pr-*` stages whose state was last written more than `ttl-minutes` (default 15) ago.
 - Upgrade: caller grants `pull-requests: write` (for the comment; the `ci` job's `permissions` must include it), and adds a small workflow for cleanup (example at the top of `preview-cleanup.yml`).
 

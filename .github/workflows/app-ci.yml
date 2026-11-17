@@ -73,6 +73,10 @@ on:
         description: Only PRs whose head branch starts with this get a preview (so ordinary PRs do not). Empty = every PR.
         type: string
         default: "preview/"
+      preview-base-stage:
+        description: Stage whose secret values previews inherit (copied on every preview deploy). Must not be production.
+        type: string
+        default: staging
       preview-comment:
         description: Post/update one comment with the preview URL on the PR
         type: boolean
@@ -171,6 +175,8 @@ jobs:
       url: ${{ steps.url.outputs.url }}
     env:
       STAGE: pr-${{ github.event.number }}
+      BASE_STAGE: ${{ inputs.preview-base-stage }}
+      PRODUCTION_STAGE: ${{ inputs.production-stage }}
       SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
     steps:
       - *checkout
@@ -182,14 +188,27 @@ jobs:
           role-to-assume: ${{ inputs.role-arn }}
           role-session-name: sst-foundation-preview
           aws-region: ${{ inputs.aws-region }}
+      # Previews inherit the base stage's (normally staging) secret values; no per-preview secrets to set.
+      # Values go through a 0600 temp file and are never printed. A secret missing on the base stage is reported below.
+      - name: Copy base-stage secrets to preview
+        run: |
+          set -euo pipefail
+          if [ "$BASE_STAGE" = production ] || [ "$BASE_STAGE" = "$PRODUCTION_STAGE" ]; then
+            echo "::error::preview-base-stage must not be a production stage"; exit 1
+          fi
+          umask 077
+          f="$RUNNER_TEMP/preview-secrets.env"
+          trap 'rm -f "$f"' EXIT
+          npx sst secret list --stage "$BASE_STAGE" > "$f"
+          if [ -s "$f" ]; then npx sst secret load --stage "$STAGE" "$f"; else echo "Base stage $BASE_STAGE has no secret values"; fi
       - name: Deploy
         run: |
           set -o pipefail
           if ! npx sst deploy --stage "$STAGE" 2>&1 | tee deploy.log; then
             secrets=$(grep -o 'Set a value for [A-Za-z0-9_]*' deploy.log | awk '{print $NF}' | sort -u | tr '\n' ' ')
             if [ -n "$secrets" ]; then
-              msg="Preview $STAGE needs secret value(s) before it can deploy: $secrets. Set each with: sst secret set <NAME> <value> --stage $STAGE (previews never get values copied from staging or production). Re-run the job after."
-              echo "::error title=Missing secret on $STAGE::$msg"
+              msg="Preview $STAGE needs secret value(s) that are not set on the base stage $BASE_STAGE: $secrets. Set each with: sst secret set <NAME> <value> --stage $BASE_STAGE (previews inherit the base stage's values), then re-run this job."
+              echo "::error title=Missing secret on $BASE_STAGE::$msg"
               { echo "### Preview failed: missing secret"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
             fi
             exit 1
