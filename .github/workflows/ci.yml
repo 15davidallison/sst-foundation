@@ -16,6 +16,7 @@ jobs:
     permissions:
       contents: read
       id-token: write # required by the called workflow's deploy job, even though it is skipped here
+      pull-requests: write # required by the called workflow's preview comment step, even though previews are off here
     with:
       deploy-stage: none # unused: no role-arn, so no deploy job runs
       sst-install: false # sst-foundation has no SST app
