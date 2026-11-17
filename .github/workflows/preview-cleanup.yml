@@ -114,9 +114,15 @@ jobs:
           STAGES: ${{ steps.select.outputs.stages }}
         run: |
           failed=0
+          bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
           for s in $STAGES; do
             [[ "$s" =~ ^pr-[1-9][0-9]*$ ]] || { echo "::error::Refusing unexpected stage $s"; failed=1; continue; }
             echo "Removing $s"
-            npx sst remove --stage "$s" || { echo "::error::Failed to remove $s"; failed=1; }
+            if npx sst remove --stage "$s"; then
+              # `sst remove` leaves an empty state object behind; without this the sweep would re-remove it forever.
+              aws s3 rm "s3://$bucket/app/$APP/$s.json"
+            else
+              echo "::error::Failed to remove $s"; failed=1
+            fi
           done
           exit $failed
