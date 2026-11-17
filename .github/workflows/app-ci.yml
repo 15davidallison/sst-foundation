@@ -142,17 +142,7 @@ jobs:
           role-session-name: sst-foundation-deploy
           aws-region: ${{ inputs.aws-region }}
       - name: Deploy
-        run: |
-          set -o pipefail
-          if ! npx sst deploy --stage "$STAGE" 2>&1 | tee deploy.log; then
-            secrets=$(grep -o 'Set a value for [A-Za-z0-9_]*' deploy.log | awk '{print $NF}' | sort -u | tr '\n' ' ')
-            if [ -n "$secrets" ]; then
-              msg="Preview $STAGE needs secret value(s) before it can deploy: $secrets. Set each with: sst secret set <NAME> <value> --stage $STAGE (previews never get values copied from staging or production). Re-run the job after."
-              echo "::error title=Missing secret on $STAGE::$msg"
-              { echo "### Preview failed: missing secret"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
-            fi
-            exit 1
-          fi
+        run: npx sst deploy --stage "$STAGE"
       - &read-url
         name: Read URL for smoke tests
         id: url
@@ -193,7 +183,17 @@ jobs:
           role-session-name: sst-foundation-preview
           aws-region: ${{ inputs.aws-region }}
       - name: Deploy
-        run: npx sst deploy --stage "$STAGE"
+        run: |
+          set -o pipefail
+          if ! npx sst deploy --stage "$STAGE" 2>&1 | tee deploy.log; then
+            secrets=$(grep -o 'Set a value for [A-Za-z0-9_]*' deploy.log | awk '{print $NF}' | sort -u | tr '\n' ' ')
+            if [ -n "$secrets" ]; then
+              msg="Preview $STAGE needs secret value(s) before it can deploy: $secrets. Set each with: sst secret set <NAME> <value> --stage $STAGE (previews never get values copied from staging or production). Re-run the job after."
+              echo "::error title=Missing secret on $STAGE::$msg"
+              { echo "### Preview failed: missing secret"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 1
+          fi
       - *read-url
 
   smoke-preview:
