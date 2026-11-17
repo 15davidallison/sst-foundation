@@ -1,0 +1,124 @@
+# Default CI/CD for sst-foundation apps. Call it from the app's own workflow, pinned to a sst-foundation tag:
+#
+#   jobs:
+#     ci:
+#       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.2.0
+#       permissions: { contents: read, id-token: write }   # id-token is needed for the OIDC deploy
+#       with:
+#         deploy-stage: production
+#         role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+#
+# Customize by: (1) inputs below, (2) adding your own jobs next to the `ci` job (use `needs: ci`),
+# or (3) not calling this at all. AWS access is GitHub OIDC only; no stored keys.
+# Deploys run only on push to main, and only when `role-arn` is non-empty.
+name: app-ci
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "24"
+      sst-install:
+        description: Run `npx sst install` before checks (needed when sst.config.ts exists)
+        type: boolean
+        default: true
+      lint-command:
+        type: string
+        default: npm run lint
+      typecheck-command:
+        type: string
+        default: npm run typecheck
+      test-command:
+        description: Empty = skip tests
+        type: string
+        default: ""
+      deploy-stage:
+        description: Stage deployed on push to main (production, staging, ...)
+        type: string
+        required: true
+      role-arn:
+        description: OIDC deploy role to assume. Empty = checks only, no deploy.
+        type: string
+        default: ""
+      aws-region:
+        type: string
+        default: us-west-2
+      smoke-url-output:
+        description: Key in .sst/outputs.json holding the URL to smoke check. Empty = skip.
+        type: string
+        default: url
+      smoke-expect-jq:
+        description: Optional jq expression the JSON response body must satisfy
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # Values shared by both jobs are defined once here (&anchor) and reused below (*alias).
+    runs-on: &runner ubuntu-24.04 # pinned: ubuntu-latest moves; bump deliberately
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - &setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - &install
+        run: npm ci
+      # Generates .sst/platform (gitignored), which sst.config.ts references. No AWS access needed.
+      - name: SST install
+        if: inputs.sst-install
+        # Needs an explicit stage: SST's default (your username) is rejected by foundationApp.
+        env:
+          STAGE: ${{ inputs.deploy-stage }}
+        run: npx sst install --stage "$STAGE"
+      - name: Lint
+        run: ${{ inputs.lint-command }}
+      - name: Typecheck
+        run: ${{ inputs.typecheck-command }}
+      - name: Test
+        if: inputs.test-command != ''
+        run: ${{ inputs.test-command }}
+
+  deploy:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.role-arn != ''
+    runs-on: *runner
+    permissions:
+      id-token: write # request the OIDC token
+      contents: read
+    concurrency:
+      group: deploy-${{ inputs.deploy-stage }}
+      cancel-in-progress: false # never interrupt a deploy half-way
+    env:
+      STAGE: ${{ inputs.deploy-stage }}
+      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
+      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
+    steps:
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ inputs.role-arn }}
+          role-session-name: sst-foundation-deploy
+          aws-region: ${{ inputs.aws-region }}
+      - name: Deploy
+        run: npx sst deploy --stage "$STAGE"
+      - name: Smoke check
+        if: inputs.smoke-url-output != ''
+        run: |
+          URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k]' .sst/outputs.json)
+          test -n "$URL" && test "$URL" != "null"
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$URL")
+          echo "HTTP $code"
+          test "$code" = "200"
+          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
