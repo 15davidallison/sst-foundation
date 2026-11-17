@@ -4,6 +4,14 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## v0.2.1
+
+Released 2026-11-16. Documentation only; no code or workflow changes, so upgrading is optional.
+- New troubleshooting section: SST's "Unexpected error" on an unknown stage, the `AWS_PROFILE` guard,
+  AccessDenied after a stage rename, and removing a stage whose name is no longer valid.
+- New verification status: `defaultTags` confirmed on a real deploy; `allowedAccountIds` enforcement
+  still unverified.
+
 ## v0.2.0
 
 Released 2026-11-16.
