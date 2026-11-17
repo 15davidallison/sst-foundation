@@ -2,15 +2,24 @@
 #
 #   jobs:
 #     ci:
-#       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.2.1
+#       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.3.0
 #       permissions: { contents: read, id-token: write }   # id-token is needed for the OIDC deploy
 #       with:
-#         deploy-stage: production
+#         deploy-stage: staging
 #         role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+#         production-stage: production   # optional: adds the production steps below
 #
-# Customize by: (1) inputs below, (2) adding your own jobs next to the `ci` job (use `needs: ci`),
-# or (3) not calling this at all. AWS access is GitHub OIDC only; no stored keys.
-# Deploys run only on push to main, and only when `role-arn` is non-empty.
+# Pipeline on push to main:  checks -> deploy (deploy-stage) -> smoke -> deploy-production -> smoke-production
+# A failed smoke job stops the run, so production is never attempted. Without `production-stage` only the first
+# three jobs run. Pull requests run `checks` only. AWS access is GitHub OIDC only; no stored keys.
+#
+# Roles: `deploy` uses `role-arn` (non-prod role; its job declares no GitHub environment, so its OIDC subject is
+# the main-branch one). `deploy-production` declares `environment: production`, so its subject is
+# `...:environment:production`, and it reads the role from the environment variable
+# AWS_DEPLOY_ROLE_ARN_PRODUCTION (environment variables are visible only to a job that names the environment,
+# so the caller cannot pass it in). Smoke jobs get no AWS credentials at all.
+# Customize by: (1) inputs below, (2) adding your own jobs next to the `ci` job (use `needs: ci`), or (3) not
+# calling this at all.
 name: app-ci
 
 on:
@@ -50,6 +59,14 @@ on:
         default: url
       smoke-expect-jq:
         description: Optional jq expression the JSON response body must satisfy
+        type: string
+        default: ""
+      smoke-command:
+        description: Optional extra smoke test, run after the built-in URL check with SMOKE_URL and SMOKE_STAGE set (e.g. `npm run smoke`)
+        type: string
+        default: ""
+      production-stage:
+        description: Stage deployed after staging passes its smoke tests (normally `production`). Empty = no production job.
         type: string
         default: ""
 
@@ -97,10 +114,11 @@ jobs:
     concurrency:
       group: deploy-${{ inputs.deploy-stage }}
       cancel-in-progress: false # never interrupt a deploy half-way
+    outputs:
+      url: ${{ steps.url.outputs.url }}
     env:
       STAGE: ${{ inputs.deploy-stage }}
       SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
-      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
     steps:
       - *checkout
       - *setup-node
@@ -113,12 +131,105 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
       - name: Deploy
         run: npx sst deploy --stage "$STAGE"
-      - name: Smoke check
-        if: inputs.smoke-url-output != ''
+      - &read-url
+        name: Read URL for smoke tests
+        id: url
         run: |
-          URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k]' .sst/outputs.json)
-          test -n "$URL" && test "$URL" != "null"
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$URL")
+          URL=""
+          if [ -n "$SMOKE_URL_OUTPUT" ]; then URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+  # Runs with no AWS credentials. Always runs after a deploy (steps skip inside), so `needs` below never
+  # sees a skipped job.
+  smoke:
+    needs: deploy
+    runs-on: *runner
+    permissions:
+      contents: read
+    env: &smoke-env
+      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
+      SMOKE_COMMAND: ${{ inputs.smoke-command }}
+    steps:
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Smoke check
+        env:
+          SMOKE_URL: ${{ needs.deploy.outputs.url }}
+        run: |
+          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
           echo "HTTP $code"
           test "$code" = "200"
           if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
+      - name: Smoke command
+        env:
+          SMOKE_URL: ${{ needs.deploy.outputs.url }}
+          SMOKE_STAGE: ${{ inputs.deploy-stage }}
+        run: |
+          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
+          bash -c "$SMOKE_COMMAND"
+
+  deploy-production:
+    needs: [deploy, smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.production-stage != ''
+    runs-on: *runner
+    environment:
+      name: production # the production role's trust accepts only this environment; deployment branches = main
+      url: ${{ steps.url.outputs.url }}
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-${{ inputs.production-stage }}
+      cancel-in-progress: false
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    env:
+      STAGE: ${{ inputs.production-stage }}
+      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
+      PRODUCTION_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
+    steps:
+      - name: Require production role variable
+        run: |
+          test -n "$PRODUCTION_ROLE_ARN" || { echo "::error::Environment variable AWS_DEPLOY_ROLE_ARN_PRODUCTION is not set on the 'production' environment"; exit 1; }
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Configure AWS credentials (OIDC, production role)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
+          role-session-name: sst-foundation-deploy-production
+          aws-region: ${{ inputs.aws-region }}
+      - name: Deploy
+        run: npx sst deploy --stage "$STAGE"
+      - *read-url
+
+  # Failing here means production is already changed: the run goes red (GitHub notifies on failed runs).
+  smoke-production:
+    needs: deploy-production
+    runs-on: *runner
+    permissions:
+      contents: read
+    env: *smoke-env
+    steps:
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Smoke check
+        env:
+          SMOKE_URL: ${{ needs.deploy-production.outputs.url }}
+        run: |
+          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
+          echo "HTTP $code"
+          test "$code" = "200"
+          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
+      - name: Smoke command
+        env:
+          SMOKE_URL: ${{ needs.deploy-production.outputs.url }}
+          SMOKE_STAGE: ${{ inputs.production-stage }}
+        run: |
+          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
+          bash -c "$SMOKE_COMMAND"

@@ -91,7 +91,21 @@ Returns the object SST expects from `app()`:
 Call it with `uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@<tag>`. The calling job must
 grant `permissions: { contents: read, id-token: write }`, or the OIDC deploy cannot request a token.
 
-Jobs: `checks` (always) then `deploy` (push to `main`, and only if `role-arn` is set).
+Jobs, on push to `main` (pull requests run `checks` only):
+
+```
+checks -> deploy (deploy-stage) -> smoke -> deploy-production (production-stage) -> smoke-production
+```
+
+- `deploy` runs only if `role-arn` is set. `smoke` has no AWS credentials. If `smoke` fails, `deploy-production` never runs.
+- `deploy-production` runs only if `production-stage` is set. It declares `environment: production`, so its OIDC
+  subject is `repo:<owner>/<repo>:environment:production` (immutable-prefix form on newer repos). The production role must
+  trust exactly that, and the `production` GitHub environment should restrict deployment branches to `main`.
+- The production role ARN is read from the **environment variable** `AWS_DEPLOY_ROLE_ARN_PRODUCTION` on the `production`
+  environment. It is not an input, because environment variables are visible only to a job that names the environment.
+- The first-stage job declares **no** environment, on purpose: adding one would change its OIDC subject and break a non-prod role
+  that trusts `main` and `pull_request`.
+- A failed `smoke-production` leaves production changed and the run red; there is no automatic rollback.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -104,13 +118,15 @@ Jobs: `checks` (always) then `deploy` (push to `main`, and only if `role-arn` is
 | `test-command` | `""` | Empty = skip |
 | `smoke-url-output` | `url` | Key in `.sst/outputs.json` to GET after deploy; empty = skip |
 | `smoke-expect-jq` | `""` | Optional `jq -e` expression the JSON body must satisfy |
+| `smoke-command` | `""` | Optional extra smoke test, run after the URL check with `SMOKE_URL` and `SMOKE_STAGE` set (e.g. `npm run smoke`) |
+| `production-stage` | `""` | Stage deployed after staging smoke passes (normally `production`). Empty = no production jobs |
 
 Customizing:
 - **Inputs** cover commands, stage, region and smoke check.
 - **Extra jobs:** add jobs to the caller workflow with `needs: ci`.
 - **Opt out:** write your own workflow and don't call this one.
 
-The deploy job serializes per stage (`concurrency: deploy-<stage>`, never cancelled mid-deploy).
+The deploy jobs serialize per stage (`concurrency: deploy-<stage>`, never cancelled mid-deploy). GitHub keeps at most one waiting run per group, so two quick merges can skip the older one's pipeline; the newer run deploys the newer commit.
 
 ## Secrets and config
 
