@@ -85,7 +85,11 @@ jobs:
           set -euo pipefail
           if [ -n "$PR_NUMBER" ]; then
             [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Bad pr-number"; exit 1; }
-            echo "stages=pr-$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            # Most PRs never had a preview: only remove if state exists, so closing them stays green.
+            bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
+            n=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "app/$APP/pr-$PR_NUMBER.json" --query 'length(Contents || `[]`)' --output text)
+            if [ "$n" = "0" ]; then echo "No preview state for pr-$PR_NUMBER; nothing to do"; echo "stages=" >> "$GITHUB_OUTPUT"
+            else echo "stages=pr-$PR_NUMBER" >> "$GITHUB_OUTPUT"; fi
             exit 0
           fi
           bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')

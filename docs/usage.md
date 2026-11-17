@@ -130,7 +130,7 @@ The deploy jobs serialize per stage (`concurrency: deploy-<stage>`, never cancel
 
 ## Preview stages: `preview` and `preview-cleanup.yml`
 
-Opt in with `preview: true` on the `app-ci.yml` call. A PR then deploys `pr-<n>` (non-prod role, OIDC subject `...:pull_request`), smoke-tests it, and comments the URL. The `ci` job's `permissions` must include `pull-requests: write`. Dependabot and fork PRs get `checks` only.
+Opt in with `preview: true` on the `app-ci.yml` call. A PR whose head branch starts with `preview/` (input `preview-branch-prefix`; empty = every PR) then deploys `pr-<n>` (non-prod role, OIDC subject `...:pull_request`), smoke-tests it, and comments the URL. The `ci` job's `permissions` must include `pull-requests: write`. Dependabot and fork PRs get `checks` only.
 
 Removal is a separate small workflow in the app, calling `preview-cleanup.yml` on `pull_request: closed` (removes that PR's stage) and on `schedule` every 15 minutes (removes `pr-*` stages whose state object in the SST state bucket was last written over `ttl-minutes` ago). The header of `preview-cleanup.yml` has a copy-paste example. Scheduled runs can be late, so expect 15 to 30 minutes. Design and risks: offering `docs/runbooks/05-preview-stages.md`. A preview stage has no secret values; do not copy any in.
 

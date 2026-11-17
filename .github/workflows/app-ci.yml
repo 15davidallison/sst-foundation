@@ -69,6 +69,10 @@ on:
         description: Deploy a `pr-<n>` preview on pull requests (needs `role-arn`; the caller must grant pull-requests write for the comment)
         type: boolean
         default: false
+      preview-branch-prefix:
+        description: Only PRs whose head branch starts with this get a preview (so ordinary PRs do not). Empty = every PR.
+        type: string
+        default: "preview/"
       preview-comment:
         description: Post/update one comment with the preview URL on the PR
         type: boolean
@@ -147,12 +151,13 @@ jobs:
           if [ -n "$SMOKE_URL_OUTPUT" ]; then URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-  # Preview: PRs only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
+  # Preview: PRs whose branch starts with `preview-branch-prefix` (default `preview/`) only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
   # `...:pull_request`, which the non-prod role trusts. Removal is preview-cleanup.yml.
   preview:
     needs: checks
     if: >-
       github.event_name == 'pull_request' && inputs.preview && inputs.role-arn != ''
+      && startsWith(github.event.pull_request.head.ref, inputs.preview-branch-prefix)
       && github.event.pull_request.user.login != 'dependabot[bot]'
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: *runner
