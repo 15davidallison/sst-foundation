@@ -21,20 +21,20 @@ export interface EdgeNamingDeps {
   // biome-ignore lint/suspicious/noExplicitAny: SST's $transform is generic over Pulumi resource classes
   transform: (resource: any, cb: (args: any, opts: any, name: string) => void) => void;
   // biome-ignore lint/suspicious/noExplicitAny: the aws.cloudfront namespace from @pulumi/aws
-  cloudfront: { Function: any; KeyValueStore: any };
+  cloudfront: { Function: any; KeyValueStore: any; CachePolicy: any };
   app: string;
   stage: string;
 }
 
 /**
- * Give every CloudFront Function and KeyValueStore a `<app>-<stage>-` name. SST auto-names them
+ * Give every CloudFront Function, KeyValueStore and cache policy a `<app>-<stage>-` name. SST auto-names them
  * otherwise, and the non-prod deploy role can only update or delete edge resources with its own
  * stage prefixes. Call it first thing in `run()`:
  *   applyEdgeNaming({ transform: $transform, cloudfront: aws.cloudfront, app: $app.name, stage: $app.stage });
  * Explicit names set by a component are left alone.
  */
 export function applyEdgeNaming(deps: EdgeNamingDeps): void {
-  for (const resource of [deps.cloudfront.Function, deps.cloudfront.KeyValueStore]) {
+  for (const resource of [deps.cloudfront.Function, deps.cloudfront.KeyValueStore, deps.cloudfront.CachePolicy]) {
     deps.transform(resource, (args, _opts, name) => {
       args.name ??= edgeResourceName(deps.app, deps.stage, name);
     });

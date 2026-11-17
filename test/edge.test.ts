@@ -17,9 +17,10 @@ test("applyEdgeNaming names Functions and KeyValueStores, keeps explicit names",
   const cbs = new Map<unknown, (args: { name?: string }, opts: unknown, name: string) => void>();
   const Fn = class {};
   const Kvs = class {};
+  const Cp = class {};
   applyEdgeNaming({
     transform: (r, cb) => cbs.set(r, cb),
-    cloudfront: { Function: Fn, KeyValueStore: Kvs },
+    cloudfront: { Function: Fn, KeyValueStore: Kvs, CachePolicy: Cp },
     app: "donut-nook",
     stage: "staging",
   });
@@ -29,6 +30,9 @@ test("applyEdgeNaming names Functions and KeyValueStores, keeps explicit names",
   const b = { name: "explicit" };
   cbs.get(Kvs)?.(b, {}, "Kv");
   assert.equal(b.name, "explicit");
+  const c: { name?: string } = {};
+  cbs.get(Cp)?.(c, {}, "EdgeServerCachePolicy");
+  assert.equal(c.name, "donut-nook-staging-EdgeServerCachePolicy");
 });
 
 // Runs the generated code the way CloudFront does: inside the viewer-request handler.
