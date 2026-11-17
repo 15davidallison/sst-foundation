@@ -4,6 +4,14 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## Unreleased
+
+Preview stages. Backwards compatible: nothing changes unless you set `preview: true`. Not yet proven on a real PR.
+- `app-ci.yml`: new inputs `preview` (default `false`) and `preview-comment` (default `true`). On a pull request whose head branch starts with `preview-branch-prefix` (default `preview/`; ordinary PRs get no preview) it deploys `pr-<n>` with the non-prod role, smoke-tests it, and posts/updates one comment with the URL. Skipped for Dependabot PRs (by PR author) and fork PRs.
+- Previews inherit secret values from a base stage (input `preview-base-stage`, default `staging`; refuses production): the preview job copies them with `sst secret list`/`load` through a private temp file on every deploy. A secret missing on the base stage fails the deploy with an error naming the secret and the `sst secret set <NAME> <value> --stage staging` command.
+- New `preview-cleanup.yml`: removes `pr-<n>` on PR close (a no-op if the PR had no preview), deleting the stage's empty state object afterwards so the sweep does not repeat it, and on a schedule removes `pr-*` stages whose state was last written more than `ttl-minutes` (default 15) ago.
+- Upgrade: **the caller's `ci` job must grant `pull-requests: write`** even with `preview: false`; GitHub refuses to start the run otherwise (`startup_failure`), because a called job may not ask for more than the caller grants. Also and adds a small workflow for cleanup (example at the top of `preview-cleanup.yml`).
+
 ## v0.3.0
 
 Released 2026-11-17. Release pipeline in `app-ci.yml`; backwards compatible (no `production-stage` = same behaviour as v0.2.x, except the smoke check now runs in its own job).

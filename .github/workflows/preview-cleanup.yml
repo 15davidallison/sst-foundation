@@ -1,0 +1,128 @@
+# Removes preview stages (`pr-<n>`). Call it from the app, in a small workflow of its own:
+#
+#   on:
+#     schedule: [{ cron: "*/15 * * * *" }]       # TTL sweep (runs on main)
+#     pull_request: { types: [closed] }          # remove that PR's preview now
+#   permissions: { contents: read }
+#   jobs:
+#     cleanup:
+#       uses: 15davidallison/sst-foundation/.github/workflows/preview-cleanup.yml@<tag>
+#       permissions: { contents: read, id-token: write }
+#       with:
+#         app-name: my-app
+#         role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}      # the non-prod role
+#         pr-number: ${{ github.event.number }}          # empty on schedule = TTL sweep
+#
+# Sweep: lists `app/<app-name>/pr-*.json` in the SST state bucket and removes stages whose state object was last
+# written more than `ttl-minutes` ago (SST rewrites it on every deploy). Scheduled runs are best-effort and can be late.
+# A failed removal fails the run (GitHub notifies) and is retried by the next sweep.
+name: preview-cleanup
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: SST app name (the `name` passed to foundationApp)
+        type: string
+        required: true
+      role-arn:
+        description: Non-prod OIDC deploy role. Empty = do nothing.
+        type: string
+        default: ""
+      pr-number:
+        description: Remove this PR's preview regardless of age. Empty = TTL sweep of all pr-* stages.
+        type: string
+        default: ""
+      ttl-minutes:
+        type: number
+        default: 15
+      aws-region:
+        type: string
+        default: us-west-2
+      node-version:
+        type: string
+        default: "24"
+      sst-install:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    if: inputs.role-arn != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: preview-cleanup-${{ inputs.pr-number || 'sweep' }}
+      cancel-in-progress: false
+    env:
+      APP: ${{ inputs.app-name }}
+      PR_NUMBER: ${{ inputs.pr-number }}
+      TTL_MINUTES: ${{ inputs.ttl-minutes }}
+      AWS_REGION: ${{ inputs.aws-region }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ inputs.role-arn }}
+          role-session-name: sst-foundation-preview-cleanup
+          aws-region: ${{ inputs.aws-region }}
+      - name: Select stages to remove
+        id: select
+        run: |
+          set -euo pipefail
+          if [ -n "$PR_NUMBER" ]; then
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Bad pr-number"; exit 1; }
+            # Most PRs never had a preview: only remove if state exists, so closing them stays green.
+            bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
+            n=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "app/$APP/pr-$PR_NUMBER.json" --query 'length(Contents || `[]`)' --output text)
+            if [ "$n" = "0" ]; then echo "No preview state for pr-$PR_NUMBER; nothing to do"; echo "stages=" >> "$GITHUB_OUTPUT"
+            else echo "stages=pr-$PR_NUMBER" >> "$GITHUB_OUTPUT"; fi
+            exit 0
+          fi
+          bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
+          cutoff=$(date -u -d "-${TTL_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+          # ISO timestamps compare correctly as strings. Only keys of exactly the preview shape are considered.
+          stages=$(aws s3api list-objects-v2 --bucket "$bucket" --prefix "app/$APP/pr-" --output json \
+            | jq -r --arg app "$APP" --arg cutoff "$cutoff" '
+                (.Contents // [])[]
+                | select(.Key | test("^app/" + $app + "/pr-[1-9][0-9]*\\.json$"))
+                | select((.LastModified | sub("\\+00:00$"; "Z") | sub("\\.[0-9]+Z$"; "Z")) < $cutoff)
+                | .Key | sub("^app/" + $app + "/"; "") | sub("\\.json$"; "")' | tr '\n' ' ')
+          echo "Expired previews: ${stages:-none}"
+          echo "stages=$stages" >> "$GITHUB_OUTPUT"
+      - name: SST install
+        if: inputs.sst-install && steps.select.outputs.stages != ''
+        env:
+          STAGES: ${{ steps.select.outputs.stages }}
+        run: npx sst install --stage "${STAGES%% *}"
+      - name: Remove stages
+        if: steps.select.outputs.stages != ''
+        env:
+          STAGES: ${{ steps.select.outputs.stages }}
+        run: |
+          failed=0
+          bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
+          for s in $STAGES; do
+            [[ "$s" =~ ^pr-[1-9][0-9]*$ ]] || { echo "::error::Refusing unexpected stage $s"; failed=1; continue; }
+            echo "Removing $s"
+            if npx sst remove --stage "$s"; then
+              # `sst remove` leaves an empty state object behind; without this the sweep would re-remove it forever.
+              aws s3 rm "s3://$bucket/app/$APP/$s.json"
+            else
+              echo "::error::Failed to remove $s"; failed=1
+            fi
+          done
+          exit $failed
