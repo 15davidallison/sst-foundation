@@ -155,11 +155,20 @@ The deploy jobs serialize per stage (`concurrency: deploy-<stage>`, never cancel
 - **Verified (v0.2.0 on a real deploy):** `defaultTags` reach AWS. A Lambda function and its log group
   carried `client`, `app`, `env`, `stage` and `managed-by`. The IAM role was not checked, because the
   tagging API does not list IAM roles.
-- **Not verified:** that `allowedAccountIds` makes a wrong-account deploy fail. A deploy to the right
-  account succeeds, which does not prove the refusal. Test it with a deliberately wrong profile
-  before relying on it.
+- **Verified (2026-11-17):** `allowedAccountIds` is enforced. With the allow-list set to a different account
+  than the credentials resolve to, `sst diff` failed with `AWS account ID not allowed: <account>` on the first
+  provider call, before any plan.
+- **Verified (2026-11-17, v0.3.0 pipeline on a real app):** staging deploy, smoke, production deploy under
+  `environment: production`, production smoke all ran in order, and each deploy job assumed its own role.
+  A `needs:`-gated job can use a different environment than its predecessor. Denied as expected: a PR job
+  or a non-`main` branch job using the production role, and a non-`main` branch job using the non-prod
+  role. Jobs that declare `environment: production` from a non-`main` ref are refused by GitHub's deployment
+  branch rule, not by AWS (AWS would accept that subject), so the environment must keep that rule.
+- **Not verified:** what `sst deploy` does when a linked secret has no value for a new stage (the first
+  production deploy had its secret set beforehand); whether Dependabot-triggered runs can request an OIDC token.
 
 ## Known limitations
 
 - No component wrappers (Lambda, ECS) and no preview-stage deploy or TTL cleanup workflow. Define
   resources directly with SST components, and clean up `pr-<n>` stages yourself.
+- No automatic rollback: a failed production smoke check leaves production changed and the run red.
