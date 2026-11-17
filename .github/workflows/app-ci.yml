@@ -85,6 +85,10 @@ on:
         description: Stage deployed after staging passes its smoke tests (normally `production`). Empty = no production job.
         type: string
         default: ""
+    secrets:
+      nonprod-token:
+        description: Token for the CloudFront non-prod gate (sst-foundation nonprodGateInjection). Sent as x-nonprod-token by non-production smoke checks only.
+        required: false
 
 permissions:
   contents: read
@@ -231,15 +235,19 @@ jobs:
       - name: Smoke check
         env:
           SMOKE_URL: ${{ needs.preview.outputs.url }}
+          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
         run: |
           if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
+          hdr=()
+          if [ -n "$NONPROD_TOKEN" ]; then hdr=(-H "x-nonprod-token: $NONPROD_TOKEN"); fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "${hdr[@]}" "$SMOKE_URL")
           echo "HTTP $code"
           test "$code" = "200"
           if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
       - name: Smoke command
         env:
           SMOKE_URL: ${{ needs.preview.outputs.url }}
+          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
           SMOKE_STAGE: pr-${{ github.event.number }}
         run: |
           if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
@@ -275,15 +283,19 @@ jobs:
       - name: Smoke check
         env:
           SMOKE_URL: ${{ needs.deploy.outputs.url }}
+          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
         run: |
           if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
+          hdr=()
+          if [ -n "$NONPROD_TOKEN" ]; then hdr=(-H "x-nonprod-token: $NONPROD_TOKEN"); fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "${hdr[@]}" "$SMOKE_URL")
           echo "HTTP $code"
           test "$code" = "200"
           if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
       - name: Smoke command
         env:
           SMOKE_URL: ${{ needs.deploy.outputs.url }}
+          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
           SMOKE_STAGE: ${{ inputs.deploy-stage }}
         run: |
           if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
