@@ -4,13 +4,15 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
-## Unreleased (v0.3.0)
+## v0.3.0
 
-Release pipeline in `app-ci.yml`; backwards compatible (no `production-stage` = same behaviour as v0.2.x, except the smoke check now runs in its own job).
+Released 2026-11-17. Release pipeline in `app-ci.yml`; backwards compatible (no `production-stage` = same behaviour as v0.2.x, except the smoke check now runs in its own job).
 - On push to `main`: `deploy` (first stage) -> `smoke` -> `deploy-production` -> `smoke-production`. A failed smoke stops the run.
 - New inputs: `production-stage`, `smoke-command`.
 - Production job uses `environment: production` and the environment variable `AWS_DEPLOY_ROLE_ARN_PRODUCTION`; see `docs/usage.md`.
 - The smoke check no longer runs inside the deploy job; it runs in a job with no AWS credentials.
+- Verified on a real run (staging -> smoke -> production -> smoke) and with negative tests; see `docs/usage.md`, Verification status.
+- Upgrade: bump the `uses:` tag to `v0.3.0`. To add production, set `production-stage: production` and give your production role a trust on the `production` GitHub environment (see the offering runbook linked in usage.md).
 
 ## v0.2.1
 

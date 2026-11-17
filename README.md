@@ -24,7 +24,7 @@ Prerequisites: an SST v4 app, a GitHub repo, and an AWS account with a GitHub OI
 1. Install, pinned to a release tag:
 
    ```
-   npm i --save-exact github:15davidallison/sst-foundation#v0.2.1
+   npm i --save-exact github:15davidallison/sst-foundation#v0.3.0
    ```
 
    Also set `"allowImportingTsExtensions": true` in your `tsconfig.json`. The package ships TypeScript
@@ -74,13 +74,14 @@ Prerequisites: an SST v4 app, a GitHub repo, and an AWS account with a GitHub OI
      contents: read
    jobs:
      ci:
-       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.2.1
+       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.3.0
        permissions:
          contents: read
          id-token: write
        with:
-         deploy-stage: production
+         deploy-stage: staging
          role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+         production-stage: production # optional: staging -> smoke -> production
    ```
 
 ## Best practices
