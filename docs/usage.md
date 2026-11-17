@@ -119,9 +119,31 @@ The deploy job serializes per stage (`concurrency: deploy-<stage>`, never cancel
 - Non-secret config: SSM parameters under `/<app>/<stage>/<key>`. SST already prefixes resource names
   with `<app>-<stage>`; don't add a second naming scheme.
 
-## Known limitations (v0.1.0)
+## Troubleshooting
 
-- Not verified end to end yet: that SST passes `defaultTags` and `allowedAccountIds` through to the
-  AWS provider. Confirm with `sst diff` / a tagged resource on first use.
-- No component wrappers (Lambda, ECS) and no preview-stage deploy or TTL cleanup workflow in this
-  release. Define resources directly with SST components, and clean up `pr-<n>` stages yourself.
+- **`✕ Unexpected error occurred` from SST, with no detail.** SST hides errors thrown while evaluating
+  `sst.config.ts`. Re-run with `--print-logs` and look for the real message. The usual one is
+  `Unknown stage "<name>"`: you ran SST without `--stage`, so it used your username. Pass
+  `--stage production|staging|dev-<name>|pr-<n>`.
+- **`AWS_PROFILE=... does not match pinned profile ...`.** Your shell exports `AWS_PROFILE`. Run
+  `env -u AWS_PROFILE npx sst ...`.
+- **AccessDenied in CI right after renaming a stage.** The deploy role's policy is usually scoped by
+  resource name to the stage (for example `my-app-staging-*`). Renaming a stage means updating that
+  policy; OIDC itself is fine if the role was assumed.
+- **Removing a stage that is no longer a valid name** (for example an old `sandbox`): current config
+  rejects it. Check out the commit that predates the rename in a scratch directory and run
+  `sst remove --stage <old>` there.
+
+## Verification status
+
+- **Verified (v0.2.0 on a real deploy):** `defaultTags` reach AWS. A Lambda function and its log group
+  carried `client`, `app`, `env`, `stage` and `managed-by`. The IAM role was not checked, because the
+  tagging API does not list IAM roles.
+- **Not verified:** that `allowedAccountIds` makes a wrong-account deploy fail. A deploy to the right
+  account succeeds, which does not prove the refusal. Test it with a deliberately wrong profile
+  before relying on it.
+
+## Known limitations
+
+- No component wrappers (Lambda, ECS) and no preview-stage deploy or TTL cleanup workflow. Define
+  resources directly with SST components, and clean up `pr-<n>` stages yourself.

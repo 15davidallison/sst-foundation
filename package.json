@@ -1,6 +1,6 @@
 {
   "name": "sst-foundation",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Opinionated SST defaults for my web apps",
   "private": true,
   "type": "module",
