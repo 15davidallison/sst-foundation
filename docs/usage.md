@@ -144,7 +144,7 @@ Put non-production stages behind a CloudFront Router whose function rejects requ
 async run() {
   const { applyEdgeNaming, nonprodGateInjection } = await import("sst-foundation");
   applyEdgeNaming({ transform: $transform, cloudfront: aws.cloudfront, app: $app.name, stage: $app.stage });
-  const gated = $app.stage !== "production";
+  const gated = $app.stage === "staging"; // previews: IAM-only function URLs for now (runbook 06)
   const router = gated
     ? new sst.aws.Router("Edge", {
         protection: "oac",
