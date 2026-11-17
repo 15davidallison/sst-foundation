@@ -65,6 +65,14 @@ on:
         description: Optional extra smoke test, run after the built-in URL check with SMOKE_URL and SMOKE_STAGE set (e.g. `npm run smoke`)
         type: string
         default: ""
+      preview:
+        description: Deploy a `pr-<n>` preview on pull requests (needs `role-arn`; the caller must grant pull-requests write for the comment)
+        type: boolean
+        default: false
+      preview-comment:
+        description: Post/update one comment with the preview URL on the PR
+        type: boolean
+        default: true
       production-stage:
         description: Stage deployed after staging passes its smoke tests (normally `production`). Empty = no production job.
         type: string
@@ -138,6 +146,83 @@ jobs:
           URL=""
           if [ -n "$SMOKE_URL_OUTPUT" ]; then URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+  # Preview: PRs only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
+  # `...:pull_request`, which the non-prod role trusts. Removal is preview-cleanup.yml.
+  preview:
+    needs: checks
+    if: >-
+      github.event_name == 'pull_request' && inputs.preview && inputs.role-arn != ''
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: *runner
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-pr-${{ github.event.number }}
+      cancel-in-progress: true # a newer push supersedes; an interrupted preview is disposable
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    env:
+      STAGE: pr-${{ github.event.number }}
+      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
+    steps:
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Configure AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ inputs.role-arn }}
+          role-session-name: sst-foundation-preview
+          aws-region: ${{ inputs.aws-region }}
+      - name: Deploy
+        run: npx sst deploy --stage "$STAGE"
+      - *read-url
+
+  smoke-preview:
+    needs: preview
+    runs-on: *runner
+    permissions:
+      contents: read
+      pull-requests: write # sticky preview comment (skipped when preview-comment is false)
+    env: # same values as &smoke-env below (an alias cannot point forward)
+      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
+      SMOKE_COMMAND: ${{ inputs.smoke-command }}
+    steps:
+      - *checkout
+      - *setup-node
+      - *install
+      - name: Smoke check
+        env:
+          SMOKE_URL: ${{ needs.preview.outputs.url }}
+        run: |
+          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
+          echo "HTTP $code"
+          test "$code" = "200"
+          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
+      - name: Smoke command
+        env:
+          SMOKE_URL: ${{ needs.preview.outputs.url }}
+          SMOKE_STAGE: pr-${{ github.event.number }}
+        run: |
+          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
+          bash -c "$SMOKE_COMMAND"
+      - name: Comment preview URL
+        if: always() && inputs.preview-comment && needs.preview.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ needs.preview.outputs.url }}
+          PR: ${{ github.event.number }}
+          SMOKE: ${{ job.status }}
+        run: |
+          marker='<!-- sst-foundation-preview -->'
+          body="$marker"$'\n'"Preview \`pr-$PR\`: $URL"$'\n'"Smoke: $SMOKE. Removed automatically about 15 minutes after the last push."
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null; fi
 
   # Runs with no AWS credentials. Always runs after a deploy (steps skip inside), so `needs` below never
   # sees a skipped job.

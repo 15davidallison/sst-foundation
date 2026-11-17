@@ -4,6 +4,13 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## Unreleased
+
+Preview stages. Backwards compatible: nothing changes unless you set `preview: true`. Not yet proven on a real PR.
+- `app-ci.yml`: new inputs `preview` (default `false`) and `preview-comment` (default `true`). On a pull request it deploys `pr-<n>` with the non-prod role, smoke-tests it, and posts/updates one comment with the URL. Skipped for Dependabot PRs (by PR author) and fork PRs.
+- New `preview-cleanup.yml`: removes `pr-<n>` on PR close, and on a schedule removes `pr-*` stages whose state was last written more than `ttl-minutes` (default 15) ago.
+- Upgrade: caller grants `pull-requests: write` (for the comment; the `ci` job's `permissions` must include it), and adds a small workflow for cleanup (example at the top of `preview-cleanup.yml`).
+
 ## v0.3.0
 
 Released 2026-11-17. Release pipeline in `app-ci.yml`; backwards compatible (no `production-stage` = same behaviour as v0.2.x, except the smoke check now runs in its own job).
