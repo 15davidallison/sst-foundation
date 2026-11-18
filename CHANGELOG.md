@@ -4,19 +4,26 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
-## Unreleased
+## v0.4.0
 
-Preview stages. Backwards compatible: nothing changes unless you set `preview: true`. Not yet proven on a real PR.
-- `app-ci.yml`: new inputs `preview` (default `false`) and `preview-comment` (default `true`). On a pull request whose head branch starts with `preview-branch-prefix` (default `preview/`; ordinary PRs get no preview) it deploys `pr-<n>` with the non-prod role, smoke-tests it, and posts/updates one comment with the URL. Skipped for Dependabot PRs (by PR author) and fork PRs.
-- Previews inherit secret values from a base stage (input `preview-base-stage`, default `staging`; refuses production): the preview job copies them with `sst secret list`/`load` through a private temp file on every deploy. A secret missing on the base stage fails the deploy with an error naming the secret and the `sst secret set <NAME> <value> --stage staging` command.
-- New `preview-cleanup.yml`: removes `pr-<n>` on PR close (a no-op if the PR had no preview), deleting the stage's empty state object afterwards so the sweep does not repeat it, and on a schedule removes `pr-*` stages whose state was last written more than `ttl-minutes` (default 15) ago.
-- Upgrade: **the caller's `ci` job must grant `pull-requests: write`** even with `preview: false`; GitHub refuses to start the run otherwise (`startup_failure`), because a called job may not ask for more than the caller grants. Also and adds a small workflow for cleanup (example at the top of `preview-cleanup.yml`).
+Released 2026-11-17. Preview stages and the non-prod CloudFront gate.
 
-Non-prod edge (unproven until run in sandbox; design: offering `docs/runbooks/06-nonprod-edge.md`):
-- `applyEdgeNaming(...)`: names CloudFront Functions and KeyValueStores `<app>-<stage>-...` (the non-prod deploy role can only change edge resources with its own stage prefix). Call first in `run()`.
-- `nonprodGateInjection(tokenSha256Hex)`: CloudFront Function code for a Router's `edge.viewerRequest.injection`. It requires the non-prod token (HTTP Basic password or `x-nonprod-token` header), and only the token's SHA-256 is embedded.
+**BREAKING:** the calling `ci` job must grant `pull-requests: write`, even if you never turn previews on. Without it GitHub refuses to start the run (`startup_failure`): a called job may not ask for more permissions than the caller grants, and the preview comment step asks for it. Upgrade steps:
+1. Bump `uses:` (and the npm dependency) to `v0.4.0`.
+2. Add `pull-requests: write` to the `ci` job's `permissions`.
+
+Preview stages (opt-in, `preview: true`):
+- On a pull request whose head branch starts with `preview-branch-prefix` (default `preview/`), deploys `pr-<n>` with the non-prod role, smoke-tests it, and posts one comment with the URL (updated on each push; `preview-comment`). Never for Dependabot PRs (by PR author) or fork PRs.
+- Previews inherit secrets from `preview-base-stage` (default `staging`; production refused), copied on every deploy through a private temp file. A secret missing there fails the deploy with an error naming it and the `sst secret set <NAME> <value> --stage staging` command.
+- New reusable `preview-cleanup.yml`: removes `pr-<n>` on PR close (no-op without a preview) and, on a schedule, any `pr-*` stage last deployed more than `ttl-minutes` (default 15) ago. Deletes the empty state object `sst remove` leaves behind.
+- New optional secret `nonprod-token`: sent as `x-nonprod-token` by the staging and preview smoke checks, never production.
+
+Non-prod edge (library):
+- `nonprodGateInjection(tokenSha256Hex)`: CloudFront Function code for a Router's `edge.viewerRequest.injection` that requires a token (Basic auth password or `x-nonprod-token`). Only the token's SHA-256 is embedded.
+- `applyEdgeNaming(...)`: names CloudFront Functions, KeyValueStores and cache policies `<app>-<stage>-...`; call first in `run()`.
 - `edgeResourceName(app, stage, logical)`.
-- `app-ci.yml`: optional secret `nonprod-token`, sent as `x-nonprod-token` by the staging and preview smoke checks (never production).
+
+Verified and not verified: see `docs/usage.md`, Verification status.
 
 ## v0.3.0
 
