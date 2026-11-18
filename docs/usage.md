@@ -134,11 +134,11 @@ Opt in with `preview: true` on the `app-ci.yml` call. A PR whose head branch sta
 
 Removal is a separate small workflow in the app, calling `preview-cleanup.yml` on `pull_request: closed` (removes that PR's stage) and on `schedule` every 15 minutes (removes `pr-*` stages whose state object in the SST state bucket was last written over `ttl-minutes` ago). The header of `preview-cleanup.yml` has a copy-paste example. Scheduled runs can be late, so expect 15 to 30 minutes. Design and risks: offering `docs/runbooks/05-preview-stages.md`. Previews inherit secrets from a base stage (`preview-base-stage`, default `staging`, never production): each preview deploy copies its values to `pr-<n>`. Treat staging as the base environment and use non-production values there. A secret not set on staging fails the preview with the secret's name and the `sst secret set ... --stage staging` command. Note that PR workflow code can read what the non-prod role can read, including staging secrets, so only preview branches you trust.
 
-Status: **unproven** until the checklist in that runbook has run on a real PR.
+Status: proven except the scheduled sweep (see Verification status).
 
 ## Non-prod edge: CloudFront gate
 
-Put non-production stages behind a CloudFront Router whose function rejects requests without a token; the function URLs become `AWS_IAM` (origin access control), so the gate can't be bypassed. Status: **unproven**; design and IAM in offering `docs/runbooks/06-nonprod-edge.md`.
+Put non-production stages behind a CloudFront Router whose function rejects requests without a token; the function URLs become `AWS_IAM` (origin access control), so the gate can't be bypassed. Status: proven on a preview stage (see Verification status); design and IAM in offering `docs/runbooks/06-nonprod-edge.md`.
 
 ```ts title="sst.config.ts"
 async run() {
@@ -196,11 +196,21 @@ async run() {
   or a non-`main` branch job using the production role, and a non-`main` branch job using the non-prod
   role. Jobs that declare `environment: production` from a non-`main` ref are refused by GitHub's deployment
   branch rule, not by AWS (AWS would accept that subject), so the environment must keep that rule.
-- **Not verified:** what `sst deploy` does when a linked secret has no value for a new stage (the first
-  production deploy had its secret set beforehand); whether Dependabot-triggered runs can request an OIDC token.
+- **Verified (2026-11-17, v0.4.0 previews on donut-nook):** a `preview/` PR deploys `pr-<n>`, smoke passes and one
+  comment is posted; a push redeploys the same stage and updates the comment; closing the PR removes the stage
+  and its state object; a non-`preview/` branch gets no preview. A linked secret with no value fails the deploy
+  (`SecretMissingError`) after partially creating the stage; with inheritance from `staging` the preview passed.
+- **Verified (2026-11-17, non-prod gate on a donut-nook preview):** no or wrong token 401 with a Basic challenge,
+  token 200 (CI smoke), direct function URL `AWS_IAM` and unsigned 403; removal deleted every CloudFront resource.
+  A distribution takes about 3 minutes to create and about 25 to delete.
+- **Not verified:** the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
+  gate on `staging` of a real app (proven on a preview stage only); whether Dependabot-triggered runs can request
+  an OIDC token (previews skip Dependabot regardless).
 
 ## Known limitations
 
-- No component wrappers (Lambda, ECS) and no preview-stage deploy or TTL cleanup workflow. Define
-  resources directly with SST components, and clean up `pr-<n>` stages yourself.
+- No component wrappers (Lambda, ECS). Define resources directly with SST components.
+- `protection: "oac"` rejects browser POST/PUT bodies (clients must send `x-amz-content-sha256`); use
+  `"oac-with-edge-signing"` when an app needs them.
+- Previews behind CloudFront are possible but slow to remove (~25 min); the default keeps previews off CloudFront.
 - No automatic rollback: a failed production smoke check leaves production changed and the run red.

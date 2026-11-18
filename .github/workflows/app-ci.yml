@@ -2,8 +2,8 @@
 #
 #   jobs:
 #     ci:
-#       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.3.0
-#       permissions: { contents: read, id-token: write }   # id-token is needed for the OIDC deploy
+#       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.4.0
+#       permissions: { contents: read, id-token: write, pull-requests: write }   # id-token: OIDC deploy; pull-requests: preview comment (required even without previews)
 #       with:
 #         deploy-stage: staging
 #         role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
