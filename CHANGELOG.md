@@ -12,6 +12,12 @@ Preview stages. Backwards compatible: nothing changes unless you set `preview: t
 - New `preview-cleanup.yml`: removes `pr-<n>` on PR close (a no-op if the PR had no preview), deleting the stage's empty state object afterwards so the sweep does not repeat it, and on a schedule removes `pr-*` stages whose state was last written more than `ttl-minutes` (default 15) ago.
 - Upgrade: **the caller's `ci` job must grant `pull-requests: write`** even with `preview: false`; GitHub refuses to start the run otherwise (`startup_failure`), because a called job may not ask for more than the caller grants. Also and adds a small workflow for cleanup (example at the top of `preview-cleanup.yml`).
 
+Non-prod edge (unproven until run in sandbox; design: offering `docs/runbooks/06-nonprod-edge.md`):
+- `applyEdgeNaming(...)`: names CloudFront Functions and KeyValueStores `<app>-<stage>-...` (the non-prod deploy role can only change edge resources with its own stage prefix). Call first in `run()`.
+- `nonprodGateInjection(tokenSha256Hex)`: CloudFront Function code for a Router's `edge.viewerRequest.injection`. It requires the non-prod token (HTTP Basic password or `x-nonprod-token` header), and only the token's SHA-256 is embedded.
+- `edgeResourceName(app, stage, logical)`.
+- `app-ci.yml`: optional secret `nonprod-token`, sent as `x-nonprod-token` by the staging and preview smoke checks (never production).
+
 ## v0.3.0
 
 Released 2026-11-17. Release pipeline in `app-ci.yml`; backwards compatible (no `production-stage` = same behaviour as v0.2.x, except the smoke check now runs in its own job).

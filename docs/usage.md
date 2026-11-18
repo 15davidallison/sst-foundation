@@ -136,6 +136,30 @@ Removal is a separate small workflow in the app, calling `preview-cleanup.yml` o
 
 Status: **unproven** until the checklist in that runbook has run on a real PR.
 
+## Non-prod edge: CloudFront gate
+
+Put non-production stages behind a CloudFront Router whose function rejects requests without a token; the function URLs become `AWS_IAM` (origin access control), so the gate can't be bypassed. Status: **unproven**; design and IAM in offering `docs/runbooks/06-nonprod-edge.md`.
+
+```ts title="sst.config.ts"
+async run() {
+  const { applyEdgeNaming, nonprodGateInjection } = await import("sst-foundation");
+  applyEdgeNaming({ transform: $transform, cloudfront: aws.cloudfront, app: $app.name, stage: $app.stage });
+  const gated = $app.stage === "staging"; // previews: IAM-only function URLs for now (runbook 06)
+  const router = gated
+    ? new sst.aws.Router("Edge", {
+        protection: "oac",
+        edge: { viewerRequest: { injection: new sst.Secret("NonprodGateTokenSha256").value.apply(nonprodGateInjection) } },
+      })
+    : undefined;
+  const api = new sst.aws.Function("Api", { handler: "src/api.handler", url: router ? { router: { instance: router } } : true });
+  return { url: api.url };
+}
+```
+
+- Token: `openssl rand -hex 32`, never a human-chosen password. Store its SHA-256 (hex) as the SST secret `NonprodGateTokenSha256` on `staging` (previews inherit it), the token itself in your password manager and as the repo secret passed to `app-ci.yml` as `nonprod-token`.
+- Browser: the Basic auth prompt; any username, the token as password. Agents/CI: header `x-nonprod-token`.
+- `protection: "oac"` needs `x-amz-content-sha256` on POST/PUT from clients; use `"oac-with-edge-signing"` when an app needs browser POSTs.
+
 ## Secrets and config
 
 - Secrets: declare `new sst.Secret("Name")`; set values with `sst secret set Name --stage <stage>`.

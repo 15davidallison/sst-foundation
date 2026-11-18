@@ -1,4 +1,5 @@
 export { type AccountMap, assertProfile, resolveTarget, type Target } from "./accounts.ts";
+export { applyEdgeNaming, type EdgeNamingDeps, edgeResourceName, nonprodGateInjection } from "./edge.ts";
 export { foundationApp, type FoundationAppOptions } from "./app.ts";
 export {
   classifyStage,
