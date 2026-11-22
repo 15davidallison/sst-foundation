@@ -56,6 +56,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      deployments: write # mark removed previews' deployment records inactive (consoles stop listing them)
     concurrency:
       group: preview-cleanup-${{ inputs.pr-number || 'sweep' }}
       cancel-in-progress: false
@@ -112,6 +113,7 @@ jobs:
         if: steps.select.outputs.stages != ''
         env:
           STAGES: ${{ steps.select.outputs.stages }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           failed=0
           bucket=$(aws ssm get-parameter --name /sst/bootstrap --query Parameter.Value --output text | jq -r '.state')
@@ -121,6 +123,9 @@ jobs:
             if npx sst remove --stage "$s"; then
               # `sst remove` leaves an empty state object behind; without this the sweep would re-remove it forever.
               aws s3 rm "s3://$bucket/app/$APP/$s.json"
+              for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$s&per_page=100" --jq '.[].id' 2>/dev/null); do
+                gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive > /dev/null || echo "::warning::Couldn't mark deployment $id inactive"
+              done
             else
               echo "::error::Failed to remove $s"; failed=1
             fi

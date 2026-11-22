@@ -57,6 +57,14 @@ on:
         description: Key in .sst/outputs.json holding the URL to smoke check. Empty = skip.
         type: string
         default: url
+      site-url-output:
+        description: Key in .sst/outputs.json holding the app's public URL, recorded on the GitHub deployment (a console's live link). Empty = none.
+        type: string
+        default: url
+      app-name:
+        description: App name recorded on GitHub deployments (consoles group apps by it). Empty = repository name.
+        type: string
+        default: ""
       smoke-expect-jq:
         description: Optional jq expression the JSON response body must satisfy
         type: string
@@ -131,6 +139,7 @@ jobs:
     permissions:
       id-token: write # request the OIDC token
       contents: read
+      deployments: write # deployment record (version, URL, account) for consoles
     concurrency:
       group: deploy-${{ inputs.deploy-stage }}
       cancel-in-progress: false # never interrupt a deploy half-way
@@ -150,6 +159,7 @@ jobs:
           role-session-name: sst-foundation-deploy
           aws-region: ${{ inputs.aws-region }}
       - name: Deploy
+        id: deploy
         run: npx sst deploy --stage "$STAGE"
       - &read-url
         name: Read URL for smoke tests
@@ -158,6 +168,35 @@ jobs:
           URL=""
           if [ -n "$SMOKE_URL_OUTPUT" ]; then URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+      # One GitHub deployment per deploy, for deployment consoles: commit, site URL, app, stage, AWS account and region. Bookkeeping
+      # only: if GitHub's API fails the step warns and the release carries on (continue-on-error).
+      - &record-deployment
+        name: Record GitHub deployment
+        if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.deploy.outcome }}
+          SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
+          APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
+          REGION: ${{ inputs.aws-region }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+          site=""
+          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          state=failure; [ "$OUTCOME" = success ] && state=success
+          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" '{
+              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "sst-foundation deploy",
+              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region } }' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          jq -nc --arg s "$state" --arg url "$site" --arg log "$RUN_URL" \
+            '{ state: $s, log_url: $log, auto_inactive: true } + (if $url == "" then {} else { environment_url: $url } end)' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - > /dev/null
+          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($state)"
 
   # Preview: PRs whose branch starts with `preview-branch-prefix` (default `preview/`) only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
   # `...:pull_request`, which the non-prod role trusts. Removal is preview-cleanup.yml.
@@ -172,6 +211,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      deployments: write # deployment record (version, URL, account) for consoles
     concurrency:
       group: deploy-pr-${{ github.event.number }}
       cancel-in-progress: true # a newer push supersedes; an interrupted preview is disposable
@@ -206,6 +246,7 @@ jobs:
           npx sst secret list --stage "$BASE_STAGE" > "$f"
           if [ -s "$f" ]; then npx sst secret load --stage "$STAGE" "$f"; else echo "Base stage $BASE_STAGE has no secret values"; fi
       - name: Deploy
+        id: deploy
         run: |
           set -o pipefail
           if ! npx sst deploy --stage "$STAGE" 2>&1 | tee deploy.log; then
@@ -218,6 +259,7 @@ jobs:
             exit 1
           fi
       - *read-url
+      - *record-deployment
 
   smoke-preview:
     needs: preview
@@ -311,6 +353,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      deployments: write # deployment record (version, URL, account) for consoles
     concurrency:
       group: deploy-${{ inputs.production-stage }}
       cancel-in-progress: false
@@ -334,8 +377,10 @@ jobs:
           role-session-name: sst-foundation-deploy-production
           aws-region: ${{ inputs.aws-region }}
       - name: Deploy
+        id: deploy
         run: npx sst deploy --stage "$STAGE"
       - *read-url
+      - *record-deployment
 
   # Failing here means production is already changed: the run goes red (GitHub notifies on failed runs).
   smoke-production:

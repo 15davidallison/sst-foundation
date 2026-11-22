@@ -74,11 +74,12 @@ Prerequisites: an SST v4 app, a GitHub repo, and an AWS account with a GitHub OI
      contents: read
    jobs:
      ci:
-       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.4.0
+       uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@v0.5.0
        permissions:
          contents: read
          id-token: write
          pull-requests: write # required since v0.4.0 (preview comment), even without previews
+         deployments: write # required since v0.5.0 (deployment records)
        with:
          deploy-stage: staging
          role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}

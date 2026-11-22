@@ -4,6 +4,21 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## v0.5.0
+
+Released YYYY-MM-DD. Deployment records and operations (redeploy, rollback, teardown).
+
+**BREAKING:** the calling `ci` job must grant `deployments: write`, or GitHub refuses to start the run (`startup_failure`). Upgrade steps:
+1. Bump `uses:` (and the npm dependency) to `v0.5.0`.
+2. Add `deployments: write` to the `ci` job's `permissions` (and to the `cleanup` job's, if you call `preview-cleanup.yml`).
+3. Optional: set `site-url-output` if your public URL isn't the `url` output; set `app-name` if it differs from the repository name.
+4. Optional: add `ops.yml` (docs/usage.md, "Operations").
+
+- `app-ci.yml`: every deploy (staging, production, preview) records a GitHub deployment with the commit, the site URL and `payload: { sstFoundation: 1, app, stage, account, region }`. Recording failures warn but don't fail the release. New inputs `site-url-output` (default `url`) and `app-name` (default repository name).
+- `preview-cleanup.yml`: removed previews' deployments are marked `inactive`. Needs `deployments: write`.
+- New `app-ops.yml`: `redeploy`, `rollback` (only to a commit with a successful deployment on that stage), `teardown` (production keeps stateful resources). Validates inputs before assuming any role; same roles, trust and concurrency groups as `app-ci.yml`.
+- `foundationApp`: `SST_FOUNDATION_TEARDOWN=<app>/production` lifts `protect` for that app's production only (`removal` stays `retain`). Exported `TEARDOWN_OVERRIDE_VAR`, `teardownOverride(app, stage, environ)`.
+
 ## v0.4.0
 
 Released 2026-11-17. Preview stages and the non-prod CloudFront gate.

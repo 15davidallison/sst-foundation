@@ -29,12 +29,13 @@ export function foundationApp(
   const target = resolveTarget(opts.accounts, input.stage, policy.env);
   assertProfile(target, environ);
   const inCI = environ.GITHUB_ACTIONS === "true";
+  const protect = policy.protect && !teardownOverride(opts.name, input.stage, environ);
 
   return {
     name: opts.name,
     home: "aws" as const,
     removal: policy.removal,
-    protect: policy.protect,
+    protect,
     providers: {
       aws: {
         ...(inCI ? {} : { profile: target.profile }),
@@ -46,4 +47,16 @@ export function foundationApp(
       },
     },
   };
+}
+
+/** Env var set only by the teardown job of `app-ops.yml`: `<app>/production`. */
+export const TEARDOWN_OVERRIDE_VAR = "SST_FOUNDATION_TEARDOWN";
+
+/**
+ * Production is `protect: true`, so SST refuses `sst remove`. The teardown job lifts that for exactly one app's
+ * production by setting SST_FOUNDATION_TEARDOWN=<app>/production. `removal` stays `retain`: SST removes the stage
+ * and keeps stateful resources (buckets, tables). Any other value, app or stage leaves protection on.
+ */
+export function teardownOverride(app: string, stage: string, environ: Record<string, string | undefined>): boolean {
+  return stage === "production" && environ[TEARDOWN_OVERRIDE_VAR] === `${app}/production`;
 }
