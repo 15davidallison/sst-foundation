@@ -89,7 +89,14 @@ Returns the object SST expects from `app()`:
 ## Reusable workflow: `app-ci.yml`
 
 Call it with `uses: 15davidallison/sst-foundation/.github/workflows/app-ci.yml@<tag>`. The calling job must
-grant `permissions: { contents: read, id-token: write }`, or the OIDC deploy cannot request a token.
+grant `permissions: { contents: read, id-token: write, pull-requests: write, deployments: write }`: `id-token` for the OIDC deploy,
+`pull-requests` for the preview comment (v0.4.0), `deployments` for deployment records (v0.5.0). A missing one stops the run
+before it starts (`startup_failure`).
+
+Every deploy (staging, production, previews) records a **GitHub deployment** for its stage: the commit, `environment_url`
+(the output named by `site-url-output`, default `url`), and `payload: { sstFoundation: 1, app, stage, account, region }`
+(`app-name` input, default the repository name). Status `success` or `failure`; recording never fails the release.
+Removed previews are marked `inactive`. Deployment consoles read these records for "what is deployed where".
 
 Jobs, on push to `main` (pull requests run `checks` only):
 
@@ -127,6 +134,48 @@ Customizing:
 - **Opt out:** write your own workflow and don't call this one.
 
 The deploy jobs serialize per stage (`concurrency: deploy-<stage>`, never cancelled mid-deploy). GitHub keeps at most one waiting run per group, so two quick merges can skip the older one's pipeline; the newer run deploys the newer commit.
+
+## Operations: `app-ops.yml` (redeploy, rollback, teardown)
+
+A reusable workflow for one-off operations on a deployed stage, run with `workflow_dispatch` from `main` (by hand, or by
+a deployment console). Add to the app repo, e.g. `.github/workflows/ops.yml`:
+
+```yaml
+name: ops
+on:
+  workflow_dispatch:
+    inputs:
+      action: { description: "redeploy | rollback | teardown", required: true, type: choice, options: [redeploy, rollback, teardown] }
+      stage: { description: "production, staging or pr-<n>", required: true, type: string }
+      sha: { description: "rollback: full commit of an earlier successful deploy", required: false, type: string }
+      requested-by: { description: "who asked", required: false, type: string }
+permissions:
+  contents: read
+jobs:
+  ops:
+    uses: 15davidallison/sst-foundation/.github/workflows/app-ops.yml@v0.5.0
+    permissions: { contents: read, id-token: write, deployments: write }
+    with:
+      action: ${{ inputs.action }}
+      stage: ${{ inputs.stage }}
+      sha: ${{ inputs.sha }}
+      requested-by: ${{ inputs.requested-by }}
+      role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      smoke-expect-jq: '.ok == true' # same as your app-ci call
+    secrets:
+      nonprod-token: ${{ secrets.NONPROD_GATE_TOKEN }}
+```
+
+- **redeploy**: deploys the newest commit with a successful deployment record on that stage, then smoke.
+- **rollback**: deploys `sha`, which must have a successful deployment on that stage (otherwise refused), then smoke.
+  Production rollback goes straight to production; it doesn't pass through staging.
+- **teardown**: `sst remove`. Previews also lose their state object. Production is `protect: true`; this job alone sets
+  `SST_FOUNDATION_TEARDOWN=<app>/production`, which makes `foundationApp` lift `protect` for that app's production only.
+  `removal` stays `retain`, so stateful resources (buckets, tables) are **kept** and keep billing until removed by hand.
+  All the stage's deployment records are marked `inactive`.
+- Roles and trust are app-ci's: the non-prod job's OIDC subject is `...:ref:refs/heads/main`, the production job uses
+  `environment: production`. No trust changes. Concurrency groups match app-ci's, so an operation never overlaps a deploy.
+- The run summary shows the action, stage, commit and `requested-by`.
 
 ## Preview stages: `preview` and `preview-cleanup.yml`
 

@@ -51,3 +51,13 @@ test("foundationApp wires removal, protection and tags", () => {
   assert.equal(app.protect, true);
   assert.equal(app.providers.aws.defaultTags.tags.env, "production");
 });
+
+test("production teardown override: only for the named app's production, and data stays retained", () => {
+  const prod = (env: Record<string, string>) => foundationApp({ name: "a", client: "c", accounts }, { stage: "production" }, env);
+  assert.equal(prod({}).protect, true);
+  assert.equal(prod({ SST_FOUNDATION_TEARDOWN: "other/production" }).protect, true);
+  assert.equal(prod({ SST_FOUNDATION_TEARDOWN: "a/staging" }).protect, true);
+  const lifted = prod({ SST_FOUNDATION_TEARDOWN: "a/production" });
+  assert.equal(lifted.protect, false);
+  assert.equal(lifted.removal, "retain");
+});
