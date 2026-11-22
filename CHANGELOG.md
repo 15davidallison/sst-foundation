@@ -14,7 +14,7 @@ Released YYYY-MM-DD. Deployment records and operations (redeploy, rollback, tear
 3. Optional: set `site-url-output` if your public URL isn't the `url` output; set `app-name` if it differs from the repository name.
 4. Optional: add `ops.yml` (docs/usage.md, "Operations").
 
-- `app-ci.yml`: every deploy (staging, production, preview) records a GitHub deployment with the commit, the site URL and `payload: { sstFoundation: 1, app, stage, account, region }`. Recording failures warn but don't fail the release. New inputs `site-url-output` (default `url`) and `app-name` (default repository name).
+- `app-ci.yml`: every deploy (staging, production, preview) records a GitHub deployment (production's from a follow-up `record-production` job: GitHub's own deployment for the `environment: production` job would otherwise retire it) with the commit, the site URL and `payload: { sstFoundation: 1, app, stage, account, region }`. Recording failures warn but don't fail the release. New inputs `site-url-output` (default `url`) and `app-name` (default repository name).
 - `preview-cleanup.yml`: removed previews' deployments are marked `inactive`. Needs `deployments: write`.
 - New `app-ops.yml`: `redeploy`, `rollback` (only to a commit with a successful deployment on that stage), `teardown` (production keeps stateful resources). Validates inputs before assuming any role; same roles, trust and concurrency groups as `app-ci.yml`.
 - `foundationApp`: `SST_FOUNDATION_TEARDOWN=<app>/production` lifts `protect` for that app's production only (`removal` stays `retain`). Exported `TEARDOWN_OVERRIDE_VAR`, `teardownOverride(app, stage, environ)`.

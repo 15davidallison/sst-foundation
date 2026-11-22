@@ -182,11 +182,12 @@ jobs:
           REGION: ${{ inputs.aws-region }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
+        run: &record-script |
           set -euo pipefail
-          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
-          site=""
-          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          # ACCOUNT / SITE are passed in by the record-production job; otherwise read them here.
+          account=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}
+          site=${SITE:-}
+          if [ -z "$site" ] && [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
           state=failure; [ "$OUTCOME" = success ] && state=success
           id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" '{
               ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "sst-foundation deploy",
@@ -359,6 +360,9 @@ jobs:
       cancel-in-progress: false
     outputs:
       url: ${{ steps.url.outputs.url }}
+      outcome: ${{ steps.deploy.outcome }}
+      account: ${{ steps.facts.outputs.account }}
+      site: ${{ steps.facts.outputs.site }}
     env:
       STAGE: ${{ inputs.production-stage }}
       SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
@@ -380,9 +384,43 @@ jobs:
         id: deploy
         run: npx sst deploy --stage "$STAGE"
       - *read-url
-      - *record-deployment
+      # Production's job declares `environment:`, so GitHub keeps its own deployment for it and marks it finished when the
+      # job ends, which retires every older deployment of the environment, including one recorded here. So this job only
+      # collects the facts, and record-production (a later job) records the deployment.
+      - name: Collect deployment facts
+        id: facts
+        if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        env:
+          SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
+        run: |
+          echo "account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          site=""
+          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          echo "site=$site" >> "$GITHUB_OUTPUT"
 
   # Failing here means production is already changed: the run goes red (GitHub notifies on failed runs).
+  record-production:
+    needs: deploy-production
+    if: always() && needs.deploy-production.result != 'skipped' && needs.deploy-production.outputs.outcome != ''
+    runs-on: *runner
+    permissions:
+      deployments: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STAGE: ${{ inputs.production-stage }}
+      OUTCOME: ${{ needs.deploy-production.outputs.outcome }}
+      ACCOUNT: ${{ needs.deploy-production.outputs.account }}
+      SITE: ${{ needs.deploy-production.outputs.site }}
+      SITE_URL_OUTPUT: ""
+      APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
+      REGION: ${{ inputs.aws-region }}
+      SHA: ${{ github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Record GitHub deployment
+        continue-on-error: true
+        run: *record-script
+
   smoke-production:
     needs: deploy-production
     runs-on: *runner
