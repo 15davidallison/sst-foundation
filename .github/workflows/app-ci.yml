@@ -158,6 +158,29 @@ jobs:
           role-to-assume: ${{ inputs.role-arn }}
           role-session-name: sst-foundation-deploy
           aws-region: ${{ inputs.aws-region }}
+      # Start record (in_progress) right away, so consoles show the deploy while it runs; the outcome is posted to it.
+      - &record-start
+        name: Record deployment start
+        id: record-start
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: deploy
+          APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
+          REGION: ${{ inputs.aws-region }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: &record-start-script |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$ACTION" '{
+              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
+              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress -f log_url="$RUN_URL" -F auto_inactive=false > /dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Started deployment record $id: $APP_NAME $STAGE @ ${SHA:0:7} ($ACTION)"
       - name: Deploy
         id: deploy
         run: npx sst deploy --stage "$STAGE"
@@ -177,6 +200,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OUTCOME: ${{ steps.deploy.outcome }}
+          DEPLOYMENT_ID: ${{ steps.record-start.outputs.id }}
           SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
           APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
           REGION: ${{ inputs.aws-region }}
@@ -188,16 +212,23 @@ jobs:
           account=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}
           site=${SITE:-}
           if [ -z "$site" ] && [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
-          state=failure; [ "$OUTCOME" = success ] && state=success
-          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" '{
-              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "sst-foundation deploy",
-              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
-              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region } }' \
-            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          action=${ACTION:-deploy}
+          # Final state: a finished teardown is `inactive` (consoles read the record's action, not the state alone).
+          state=failure
+          if [ "$OUTCOME" = success ]; then state=success; [ "$action" = teardown ] && state=inactive; fi
+          id=${DEPLOYMENT_ID:-}
+          if [ -z "$id" ]; then
+            # The start record couldn't be made; record the outcome as a new deployment instead.
+            id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$action" '{
+                ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
+                transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+                payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
+              | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          fi
           jq -nc --arg s "$state" --arg url "$site" --arg log "$RUN_URL" \
-            '{ state: $s, log_url: $log, auto_inactive: true } + (if $url == "" then {} else { environment_url: $url } end)' \
+            '{ state: $s, log_url: $log, auto_inactive: ($s == "success") } + (if $url == "" or $s == "inactive" then {} else { environment_url: $url } end)' \
             | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - > /dev/null
-          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($state)"
+          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($action: $state)"
 
   # Preview: PRs whose branch starts with `preview-branch-prefix` (default `preview/`) only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
   # `...:pull_request`, which the non-prod role trusts. Removal is preview-cleanup.yml.
@@ -233,6 +264,7 @@ jobs:
           role-to-assume: ${{ inputs.role-arn }}
           role-session-name: sst-foundation-preview
           aws-region: ${{ inputs.aws-region }}
+      - *record-start
       # Previews inherit the base stage's (normally staging) secret values; no per-preview secrets to set.
       # Values go through a 0600 temp file and are never printed. A secret missing on the base stage is reported below.
       - name: Copy base-stage secrets to preview
@@ -361,6 +393,7 @@ jobs:
     outputs:
       url: ${{ steps.url.outputs.url }}
       outcome: ${{ steps.deploy.outcome }}
+      record-id: ${{ steps.record-start.outputs.id }}
       account: ${{ steps.facts.outputs.account }}
       site: ${{ steps.facts.outputs.site }}
     env:
@@ -380,6 +413,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
           role-session-name: sst-foundation-deploy-production
           aws-region: ${{ inputs.aws-region }}
+      - *record-start
       - name: Deploy
         id: deploy
         run: npx sst deploy --stage "$STAGE"
@@ -409,6 +443,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       STAGE: ${{ inputs.production-stage }}
       OUTCOME: ${{ needs.deploy-production.outputs.outcome }}
+      DEPLOYMENT_ID: ${{ needs.deploy-production.outputs.record-id }}
       ACCOUNT: ${{ needs.deploy-production.outputs.account }}
       SITE: ${{ needs.deploy-production.outputs.site }}
       SITE_URL_OUTPUT: ""
