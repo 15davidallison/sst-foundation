@@ -106,6 +106,10 @@ jobs:
     # Values shared by both jobs are defined once here (&anchor) and reused below (*alias).
     runs-on: &runner ubuntu-24.04 # pinned: ubuntu-latest moves; bump deliberately
     steps:
+      # PROOF (temporary): `$/` resolves against this workflow file's repository at the running commit.
+      - uses: $/.github/actions/setup
+        with:
+          node-version: ${{ inputs.node-version }}
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
