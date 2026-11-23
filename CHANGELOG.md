@@ -6,7 +6,7 @@ upgrade steps.
 
 ## v0.5.0
 
-Released YYYY-MM-DD. Deployment records and operations (redeploy, rollback, teardown).
+Released 2026-11-23 (tested as v0.5.0-rc.1 to rc.4). Deployment records and operations (redeploy, rollback, teardown).
 
 **BREAKING:** the calling `ci` job must grant `deployments: write`, or GitHub refuses to start the run (`startup_failure`). Upgrade steps:
 1. Bump `uses:` (and the npm dependency) to `v0.5.0`.
