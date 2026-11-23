@@ -1,0 +1,49 @@
+name: sst-foundation record-start
+description: >-
+  Create the GitHub deployment record for a stage and mark it in_progress, so consoles show the run while it lasts.
+  Run it after aws-login (it reads the account). Bookkeeping: a failure warns and the run carries on. The job needs
+  `deployments: write`.
+inputs:
+  action:
+    description: deploy | redeploy | rollback | teardown
+    default: deploy
+  app-name:
+    required: true
+  stage:
+    required: true
+  region:
+    required: true
+  sha:
+    description: The commit being deployed
+    required: true
+  token:
+    default: ${{ github.token }}
+outputs:
+  id:
+    description: Deployment id (empty if it couldn't be created)
+    value: ${{ steps.start.outputs.id }}
+runs:
+  using: composite
+  steps:
+    - id: start
+      shell: bash
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACTION: ${{ inputs.action }}
+        APP_NAME: ${{ inputs.app-name }}
+        STAGE: ${{ inputs.stage }}
+        REGION: ${{ inputs.region }}
+        SHA: ${{ inputs.sha }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+        id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$ACTION" '{
+            ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
+            transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+            payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
+          | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+        gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress -f log_url="$RUN_URL" -F auto_inactive=false > /dev/null
+        echo "id=$id" >> "$GITHUB_OUTPUT"
+        echo "Started deployment record $id: $APP_NAME $STAGE @ ${SHA:0:7} ($ACTION)"

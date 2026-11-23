@@ -1,0 +1,44 @@
+name: sst-foundation smoke
+description: >-
+  Smoke-test a deployed stage: GET the URL (retries), expect HTTP 200, optionally a jq expression on the JSON body,
+  then an optional command with SMOKE_URL and SMOKE_STAGE set. Needs no AWS credentials. An empty URL skips the check.
+inputs:
+  url:
+    default: ""
+  stage:
+    default: ""
+  expect-jq:
+    default: ""
+  command:
+    description: Extra smoke test (e.g. `npm run smoke`); needs the repo set up
+    default: ""
+  nonprod-token:
+    description: Sent as x-nonprod-token (non-production stages behind the CloudFront gate only)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Smoke check
+      shell: bash
+      env:
+        SMOKE_URL: ${{ inputs.url }}
+        SMOKE_EXPECT_JQ: ${{ inputs.expect-jq }}
+        NONPROD_TOKEN: ${{ inputs.nonprod-token }}
+      run: |
+        set -euo pipefail
+        if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
+        hdr=()
+        if [ -n "$NONPROD_TOKEN" ]; then hdr=(-H "x-nonprod-token: $NONPROD_TOKEN"); fi
+        code=$(curl -sS -o "$RUNNER_TEMP/smoke-body.json" -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "${hdr[@]}" "$SMOKE_URL")
+        echo "HTTP $code"
+        test "$code" = "200"
+        if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" "$RUNNER_TEMP/smoke-body.json" > /dev/null; fi
+    - name: Smoke command
+      if: inputs.command != ''
+      shell: bash
+      env:
+        SMOKE_URL: ${{ inputs.url }}
+        SMOKE_STAGE: ${{ inputs.stage }}
+        NONPROD_TOKEN: ${{ inputs.nonprod-token }}
+        SMOKE_COMMAND: ${{ inputs.command }}
+      run: bash -c "$SMOKE_COMMAND"

@@ -1,0 +1,50 @@
+name: sst-foundation sst-deploy
+description: >-
+  `sst deploy` a stage with the job's AWS credentials, then read URLs from .sst/outputs.json. If the deploy fails because
+  a secret has no value and `secrets-from` is set, the error names the secrets and the stage to set them on.
+inputs:
+  stage:
+    required: true
+  url-output:
+    description: Key in .sst/outputs.json for the smoke URL. Empty = none.
+    default: url
+  site-url-output:
+    description: Key in .sst/outputs.json for the site URL. Empty = none.
+    default: url
+  secrets-from:
+    description: Stage this stage inherits secret values from (previews), named in the missing-secret error
+    default: ""
+outputs:
+  url:
+    value: ${{ steps.urls.outputs.url }}
+  site:
+    value: ${{ steps.urls.outputs.site }}
+runs:
+  using: composite
+  steps:
+    - name: Deploy
+      shell: bash
+      env:
+        STAGE: ${{ inputs.stage }}
+        BASE_STAGE: ${{ inputs.secrets-from }}
+      run: |
+        set -o pipefail
+        if ! npx sst deploy --stage "$STAGE" 2>&1 | tee "$RUNNER_TEMP/deploy.log"; then
+          secrets=$(grep -o 'Set a value for [A-Za-z0-9_]*' "$RUNNER_TEMP/deploy.log" | awk '{print $NF}' | sort -u | tr '\n' ' ')
+          if [ -n "$secrets" ] && [ -n "$BASE_STAGE" ]; then
+            msg="$STAGE needs secret value(s) that are not set on $BASE_STAGE: $secrets. Set each with: sst secret set <NAME> <value> --stage $BASE_STAGE ($STAGE inherits $BASE_STAGE's values), then re-run this job."
+            echo "::error title=Missing secret on $BASE_STAGE::$msg"
+            { echo "### Deploy failed: missing secret"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1
+        fi
+    - name: Read URLs
+      id: urls
+      shell: bash
+      env:
+        URL_OUTPUT: ${{ inputs.url-output }}
+        SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
+      run: |
+        read_key() { [ -n "$1" ] && [ -f .sst/outputs.json ] && jq -r --arg k "$1" '.[$k] // empty' .sst/outputs.json || true; }
+        echo "url=$(read_key "$URL_OUTPUT")" >> "$GITHUB_OUTPUT"
+        echo "site=$(read_key "$SITE_URL_OUTPUT")" >> "$GITHUB_OUTPUT"
