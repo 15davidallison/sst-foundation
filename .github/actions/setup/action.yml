@@ -1,0 +1,33 @@
+name: sst-foundation setup
+description: Check out the repo (no persisted credentials), set up Node with the npm cache, npm ci, and optionally `sst install`.
+inputs:
+  node-version:
+    default: "24"
+  ref:
+    description: Commit to check out. Empty = the event's commit.
+    default: ""
+  sst-install:
+    description: Run `npx sst install --stage <stage>` (needed when sst.config.ts exists; no AWS access needed)
+    default: "false"
+  stage:
+    description: Stage for `sst install` (SST's default, your username, is rejected by foundationApp)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ inputs.ref }}
+        persist-credentials: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+    - shell: bash
+      run: npm ci
+    - name: SST install
+      if: inputs.sst-install == 'true'
+      shell: bash
+      env:
+        STAGE: ${{ inputs.stage }}
+      run: npx sst install --stage "$STAGE"

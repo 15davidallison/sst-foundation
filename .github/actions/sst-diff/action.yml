@@ -1,0 +1,31 @@
+name: sst-foundation sst-diff
+description: >-
+  `sst diff --json` for a stage with the job's AWS credentials (read access is enough). Writes the output, unmodified,
+  to a file and gives its SHA-256, so an approval can be bound to exactly this diff: re-run before applying and compare.
+inputs:
+  stage:
+    required: true
+  path:
+    description: Where to write the diff JSON
+    default: sst-diff.json
+outputs:
+  path:
+    value: ${{ inputs.path }}
+  sha256:
+    description: SHA-256 (hex) of the file, byte for byte
+    value: ${{ steps.diff.outputs.sha256 }}
+runs:
+  using: composite
+  steps:
+    - id: diff
+      shell: bash
+      env:
+        STAGE: ${{ inputs.stage }}
+        OUT: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        npx sst diff --stage "$STAGE" --json > "$OUT"
+        jq -e . "$OUT" > /dev/null || { echo "::error::sst diff --json did not print valid JSON"; exit 1; }
+        sum=$(sha256sum "$OUT" | cut -d' ' -f1)
+        echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+        { echo "### sst diff: $STAGE"; echo; echo "SHA-256 \`$sum\` ($(wc -c < "$OUT") bytes, \`$OUT\`)"; } >> "$GITHUB_STEP_SUMMARY"

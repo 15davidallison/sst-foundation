@@ -131,9 +131,47 @@ checks -> deploy (deploy-stage) -> smoke -> deploy-production (production-stage)
 Customizing:
 - **Inputs** cover commands, stage, region and smoke check.
 - **Extra jobs:** add jobs to the caller workflow with `needs: ci`.
+- **Your own pipeline:** write your own jobs from the building blocks below (same steps the reusable workflows use).
 - **Opt out:** write your own workflow and don't call this one.
 
 The deploy jobs serialize per stage (`concurrency: deploy-<stage>`, never cancelled mid-deploy). GitHub keeps at most one waiting run per group, so two quick merges can skip the older one's pipeline; the newer run deploys the newer commit.
+
+## Building blocks (composite actions)
+
+`app-ci.yml`, `app-ops.yml` and `preview-cleanup.yml` are built from composite actions in `.github/actions/`. An app
+that needs a different pipeline uses the same blocks in its own jobs, pinned to the same tag:
+`uses: 15davidallison/sst-foundation/.github/actions/<block>@<tag>`. The job keeps what only a job can set: `permissions`
+(`id-token: write` to assume a role, `deployments: write` for records), `environment:` (which decides the OIDC subject),
+and `concurrency`.
+
+| Block | Does | Inputs (required in bold) | Outputs |
+|---|---|---|---|
+| `setup` | checkout (no persisted credentials), Node with the npm cache, `npm ci`, optional `sst install` | `node-version`, `ref`, `sst-install`, `stage` | |
+| `aws-login` | assume a role with GitHub OIDC | **`role-arn`**, **`session-name`**, `region` | |
+| `record-start` | create the stage's GitHub deployment record, `in_progress` | **`app-name`**, **`stage`**, **`region`**, **`sha`**, `action` | `id` |
+| `sst-deploy` | `sst deploy`, then read URLs from `.sst/outputs.json`; names missing secrets when `secrets-from` is set | **`stage`**, `url-output`, `site-url-output`, `secrets-from` | `url`, `site` |
+| `record-outcome` | post the outcome to the record (or create one) | **`outcome`**, **`app-name`**, **`stage`**, **`region`**, **`sha`**, `deployment-id`, `action`, `site-url-output`, `account`, `site` | |
+| `smoke` | GET the URL (200, optional `jq`), then an optional command; no AWS credentials needed | `url`, `stage`, `expect-jq`, `command`, `nonprod-token` | |
+| `sst-diff` | `sst diff --json` to a file, unmodified, and its SHA-256 (bind an approval to the exact diff: re-run before applying and compare) | **`stage`**, `path` | `path`, `sha256` |
+
+Example, a plan job on pull requests:
+
+```yaml
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: 15davidallison/sst-foundation/.github/actions/setup@<tag>
+      - uses: 15davidallison/sst-foundation/.github/actions/aws-login@<tag>
+        with: { role-arn: "${{ vars.PLAN_ROLE_ARN }}", session-name: plan }
+      - id: diff
+        uses: 15davidallison/sst-foundation/.github/actions/sst-diff@<tag>
+        with: { stage: staging }
+```
+
+Inside this repo's reusable workflows the blocks are referenced as `$/.github/actions/<block>`, which GitHub resolves
+against the workflow file's own repository at the running commit, so a caller pinned to a tag runs that tag's blocks.
 
 ## Operations: `app-ops.yml` (redeploy, rollback, teardown)
 
@@ -252,7 +290,8 @@ async run() {
 - **Verified (2026-11-17, non-prod gate on a donut-nook preview):** no or wrong token 401 with a Basic challenge,
   token 200 (CI smoke), direct function URL `AWS_IAM` and unsigned 403; removal deleted every CloudFront resource.
   A distribution takes about 3 minutes to create and about 25 to delete.
-- **Not verified:** the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
+- **Verified (2026-11-23, v0.6.0-rc.1 on donut-nook):** blocks referenced with `$/` from a private caller pinned to a tag or branch resolve to sst-foundation at that ref. Preview PR (checks, deploy, smoke, comment, record; cleanup on close with a teardown record), push to `main` (staging, smoke, production, `record-production`, production smoke) and an `ops.yml` staging redeploy all ran with the same records as v0.5.0.
+- **Not verified:** `sst-diff`'s output (that `sst diff --json` prints only JSON on stdout; the block fails if not); the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
   gate on `staging` of a real app (proven on a preview stage only); whether Dependabot-triggered runs can request
   an OIDC token (previews skip Dependabot regardless).
 

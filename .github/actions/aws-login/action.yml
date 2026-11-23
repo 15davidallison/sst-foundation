@@ -1,0 +1,19 @@
+name: sst-foundation aws-login
+description: >-
+  Assume an AWS role with GitHub OIDC (no stored keys). The job must grant `id-token: write`; its
+  OIDC subject (branch, pull_request or environment) is what the role's trust policy checks.
+inputs:
+  role-arn:
+    required: true
+  session-name:
+    required: true
+  region:
+    default: us-west-2
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        role-session-name: ${{ inputs.session-name }}
+        aws-region: ${{ inputs.region }}

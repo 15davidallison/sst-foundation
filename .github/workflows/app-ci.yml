@@ -18,8 +18,11 @@
 # `...:environment:production`, and it reads the role from the environment variable
 # AWS_DEPLOY_ROLE_ARN_PRODUCTION (environment variables are visible only to a job that names the environment,
 # so the caller cannot pass it in). Smoke jobs get no AWS credentials at all.
-# Customize by: (1) inputs below, (2) adding your own jobs next to the `ci` job (use `needs: ci`), or (3) not
-# calling this at all.
+# Customize by: (1) inputs below, (2) adding your own jobs next to the `ci` job (use `needs: ci`), or (3) writing
+# your own workflow from the same building blocks (composite actions in .github/actions/, see docs/usage.md).
+#
+# Blocks are referenced with `$/`, which resolves against this workflow's own repository at the running commit
+# (not the caller's checkout), so a caller pinned to a tag runs that tag's blocks.
 name: app-ci
 
 on:
@@ -103,27 +106,13 @@ permissions:
 
 jobs:
   checks:
-    # Values shared by both jobs are defined once here (&anchor) and reused below (*alias).
     runs-on: &runner ubuntu-24.04 # pinned: ubuntu-latest moves; bump deliberately
     steps:
-      - &checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - &setup-node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: $/.github/actions/setup
         with:
           node-version: ${{ inputs.node-version }}
-          cache: npm
-      - &install
-        run: npm ci
-      # Generates .sst/platform (gitignored), which sst.config.ts references. No AWS access needed.
-      - name: SST install
-        if: inputs.sst-install
-        # Needs an explicit stage: SST's default (your username) is rejected by foundationApp.
-        env:
-          STAGE: ${{ inputs.deploy-stage }}
-        run: npx sst install --stage "$STAGE"
+          sst-install: ${{ inputs.sst-install }}
+          stage: ${{ inputs.deploy-stage }}
       - name: Lint
         run: ${{ inputs.lint-command }}
       - name: Typecheck
@@ -144,91 +133,42 @@ jobs:
       group: deploy-${{ inputs.deploy-stage }}
       cancel-in-progress: false # never interrupt a deploy half-way
     outputs:
-      url: ${{ steps.url.outputs.url }}
-    env:
-      STAGE: ${{ inputs.deploy-stage }}
-      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
+      url: ${{ steps.deploy.outputs.url }}
     steps:
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Configure AWS credentials (OIDC, no stored keys)
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - &setup
+        uses: $/.github/actions/setup
         with:
-          role-to-assume: ${{ inputs.role-arn }}
-          role-session-name: sst-foundation-deploy
-          aws-region: ${{ inputs.aws-region }}
+          node-version: ${{ inputs.node-version }}
+      - uses: $/.github/actions/aws-login
+        with:
+          role-arn: ${{ inputs.role-arn }}
+          session-name: sst-foundation-deploy
+          region: ${{ inputs.aws-region }}
       # Start record (in_progress) right away, so consoles show the deploy while it runs; the outcome is posted to it.
-      - &record-start
-        name: Record deployment start
-        id: record-start
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ACTION: deploy
-          APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
-          REGION: ${{ inputs.aws-region }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: &record-start-script |
-          set -euo pipefail
-          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
-          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$ACTION" '{
-              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
-              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
-              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
-            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
-          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress -f log_url="$RUN_URL" -F auto_inactive=false > /dev/null
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-          echo "Started deployment record $id: $APP_NAME $STAGE @ ${SHA:0:7} ($ACTION)"
-      - name: Deploy
-        id: deploy
-        run: npx sst deploy --stage "$STAGE"
-      - &read-url
-        name: Read URL for smoke tests
-        id: url
-        run: |
-          URL=""
-          if [ -n "$SMOKE_URL_OUTPUT" ]; then URL=$(jq -r --arg k "$SMOKE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-      # One GitHub deployment per deploy, for deployment consoles: commit, site URL, app, stage, AWS account and region. Bookkeeping
-      # only: if GitHub's API fails the step warns and the release carries on (continue-on-error).
-      - &record-deployment
-        name: Record GitHub deployment
-        if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OUTCOME: ${{ steps.deploy.outcome }}
-          DEPLOYMENT_ID: ${{ steps.record-start.outputs.id }}
-          SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
-          APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
-          REGION: ${{ inputs.aws-region }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: &record-script |
-          set -euo pipefail
-          # ACCOUNT / SITE are passed in by the record-production job; otherwise read them here.
-          account=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}
-          site=${SITE:-}
-          if [ -z "$site" ] && [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
-          action=${ACTION:-deploy}
-          # Final state: a finished teardown is `inactive` (consoles read the record's action, not the state alone).
-          state=failure
-          if [ "$OUTCOME" = success ]; then state=success; [ "$action" = teardown ] && state=inactive; fi
-          id=${DEPLOYMENT_ID:-}
-          if [ -z "$id" ]; then
-            # The start record couldn't be made; record the outcome as a new deployment instead.
-            id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$action" '{
-                ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
-                transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
-                payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
-              | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
-          fi
-          jq -nc --arg s "$state" --arg url "$site" --arg log "$RUN_URL" \
-            '{ state: $s, log_url: $log, auto_inactive: ($s == "success") } + (if $url == "" or $s == "inactive" then {} else { environment_url: $url } end)' \
-            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - > /dev/null
-          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($action: $state)"
+      - id: record-start
+        uses: $/.github/actions/record-start
+        with:
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: ${{ inputs.deploy-stage }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.sha }}
+      - id: deploy
+        uses: $/.github/actions/sst-deploy
+        with:
+          stage: ${{ inputs.deploy-stage }}
+          url-output: ${{ inputs.smoke-url-output }}
+          site-url-output: ${{ inputs.site-url-output }}
+      # Bookkeeping only: if GitHub's API fails the step warns and the release carries on.
+      - if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        uses: $/.github/actions/record-outcome
+        with:
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: ${{ inputs.deploy-stage }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.sha }}
+          outcome: ${{ steps.deploy.outcome }}
+          deployment-id: ${{ steps.record-start.outputs.id }}
+          site-url-output: ${{ inputs.site-url-output }}
 
   # Preview: PRs whose branch starts with `preview-branch-prefix` (default `preview/`) only. Never for Dependabot PRs (by PR author, not actor) or fork PRs. The OIDC subject is
   # `...:pull_request`, which the non-prod role trusts. Removal is preview-cleanup.yml.
@@ -248,25 +188,27 @@ jobs:
       group: deploy-pr-${{ github.event.number }}
       cancel-in-progress: true # a newer push supersedes; an interrupted preview is disposable
     outputs:
-      url: ${{ steps.url.outputs.url }}
+      url: ${{ steps.deploy.outputs.url }}
     env:
       STAGE: pr-${{ github.event.number }}
       BASE_STAGE: ${{ inputs.preview-base-stage }}
       PRODUCTION_STAGE: ${{ inputs.production-stage }}
-      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
     steps:
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Configure AWS credentials (OIDC, no stored keys)
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - *setup
+      - uses: $/.github/actions/aws-login
         with:
-          role-to-assume: ${{ inputs.role-arn }}
-          role-session-name: sst-foundation-preview
-          aws-region: ${{ inputs.aws-region }}
-      - *record-start
+          role-arn: ${{ inputs.role-arn }}
+          session-name: sst-foundation-preview
+          region: ${{ inputs.aws-region }}
+      - id: record-start
+        uses: $/.github/actions/record-start
+        with:
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: pr-${{ github.event.number }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.event.pull_request.head.sha }}
       # Previews inherit the base stage's (normally staging) secret values; no per-preview secrets to set.
-      # Values go through a 0600 temp file and are never printed. A secret missing on the base stage is reported below.
+      # Values go through a 0600 temp file and are never printed. A secret missing on the base stage is reported by the deploy.
       - name: Copy base-stage secrets to preview
         run: |
           set -euo pipefail
@@ -278,21 +220,23 @@ jobs:
           trap 'rm -f "$f"' EXIT
           npx sst secret list --stage "$BASE_STAGE" > "$f"
           if [ -s "$f" ]; then npx sst secret load --stage "$STAGE" "$f"; else echo "Base stage $BASE_STAGE has no secret values"; fi
-      - name: Deploy
-        id: deploy
-        run: |
-          set -o pipefail
-          if ! npx sst deploy --stage "$STAGE" 2>&1 | tee deploy.log; then
-            secrets=$(grep -o 'Set a value for [A-Za-z0-9_]*' deploy.log | awk '{print $NF}' | sort -u | tr '\n' ' ')
-            if [ -n "$secrets" ]; then
-              msg="Preview $STAGE needs secret value(s) that are not set on the base stage $BASE_STAGE: $secrets. Set each with: sst secret set <NAME> <value> --stage $BASE_STAGE (previews inherit the base stage's values), then re-run this job."
-              echo "::error title=Missing secret on $BASE_STAGE::$msg"
-              { echo "### Preview failed: missing secret"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
-            fi
-            exit 1
-          fi
-      - *read-url
-      - *record-deployment
+      - id: deploy
+        uses: $/.github/actions/sst-deploy
+        with:
+          stage: pr-${{ github.event.number }}
+          url-output: ${{ inputs.smoke-url-output }}
+          site-url-output: ${{ inputs.site-url-output }}
+          secrets-from: ${{ inputs.preview-base-stage }}
+      - if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        uses: $/.github/actions/record-outcome
+        with:
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: pr-${{ github.event.number }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.event.pull_request.head.sha }}
+          outcome: ${{ steps.deploy.outcome }}
+          deployment-id: ${{ steps.record-start.outputs.id }}
+          site-url-output: ${{ inputs.site-url-output }}
 
   smoke-preview:
     needs: preview
@@ -300,33 +244,15 @@ jobs:
     permissions:
       contents: read
       pull-requests: write # sticky preview comment (skipped when preview-comment is false)
-    env: # same values as &smoke-env below (an alias cannot point forward)
-      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
-      SMOKE_COMMAND: ${{ inputs.smoke-command }}
     steps:
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Smoke check
-        env:
-          SMOKE_URL: ${{ needs.preview.outputs.url }}
-          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
-        run: |
-          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
-          hdr=()
-          if [ -n "$NONPROD_TOKEN" ]; then hdr=(-H "x-nonprod-token: $NONPROD_TOKEN"); fi
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "${hdr[@]}" "$SMOKE_URL")
-          echo "HTTP $code"
-          test "$code" = "200"
-          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
-      - name: Smoke command
-        env:
-          SMOKE_URL: ${{ needs.preview.outputs.url }}
-          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
-          SMOKE_STAGE: pr-${{ github.event.number }}
-        run: |
-          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
-          bash -c "$SMOKE_COMMAND"
+      - *setup
+      - uses: $/.github/actions/smoke
+        with:
+          url: ${{ needs.preview.outputs.url }}
+          stage: pr-${{ github.event.number }}
+          expect-jq: ${{ inputs.smoke-expect-jq }}
+          command: ${{ inputs.smoke-command }}
+          nonprod-token: ${{ secrets.nonprod-token }}
       - name: Comment preview URL
         if: always() && inputs.preview-comment && needs.preview.outputs.url != ''
         env:
@@ -348,33 +274,15 @@ jobs:
     runs-on: *runner
     permissions:
       contents: read
-    env: &smoke-env
-      SMOKE_EXPECT_JQ: ${{ inputs.smoke-expect-jq }}
-      SMOKE_COMMAND: ${{ inputs.smoke-command }}
     steps:
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Smoke check
-        env:
-          SMOKE_URL: ${{ needs.deploy.outputs.url }}
-          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
-        run: |
-          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
-          hdr=()
-          if [ -n "$NONPROD_TOKEN" ]; then hdr=(-H "x-nonprod-token: $NONPROD_TOKEN"); fi
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "${hdr[@]}" "$SMOKE_URL")
-          echo "HTTP $code"
-          test "$code" = "200"
-          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
-      - name: Smoke command
-        env:
-          SMOKE_URL: ${{ needs.deploy.outputs.url }}
-          NONPROD_TOKEN: ${{ secrets.nonprod-token }}
-          SMOKE_STAGE: ${{ inputs.deploy-stage }}
-        run: |
-          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
-          bash -c "$SMOKE_COMMAND"
+      - *setup
+      - uses: $/.github/actions/smoke
+        with:
+          url: ${{ needs.deploy.outputs.url }}
+          stage: ${{ inputs.deploy-stage }}
+          expect-jq: ${{ inputs.smoke-expect-jq }}
+          command: ${{ inputs.smoke-command }}
+          nonprod-token: ${{ secrets.nonprod-token }}
 
   deploy-production:
     needs: [deploy, smoke]
@@ -382,7 +290,7 @@ jobs:
     runs-on: *runner
     environment:
       name: production # the production role's trust accepts only this environment; deployment branches = main
-      url: ${{ steps.url.outputs.url }}
+      url: ${{ steps.deploy.outputs.url }}
     permissions:
       id-token: write
       contents: read
@@ -391,46 +299,43 @@ jobs:
       group: deploy-${{ inputs.production-stage }}
       cancel-in-progress: false
     outputs:
-      url: ${{ steps.url.outputs.url }}
+      url: ${{ steps.deploy.outputs.url }}
       outcome: ${{ steps.deploy.outcome }}
       record-id: ${{ steps.record-start.outputs.id }}
       account: ${{ steps.facts.outputs.account }}
-      site: ${{ steps.facts.outputs.site }}
+      site: ${{ steps.deploy.outputs.site }}
     env:
-      STAGE: ${{ inputs.production-stage }}
-      SMOKE_URL_OUTPUT: ${{ inputs.smoke-url-output }}
       PRODUCTION_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
     steps:
       - name: Require production role variable
         run: |
           test -n "$PRODUCTION_ROLE_ARN" || { echo "::error::Environment variable AWS_DEPLOY_ROLE_ARN_PRODUCTION is not set on the 'production' environment"; exit 1; }
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Configure AWS credentials (OIDC, production role)
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - *setup
+      - uses: $/.github/actions/aws-login
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
-          role-session-name: sst-foundation-deploy-production
-          aws-region: ${{ inputs.aws-region }}
-      - *record-start
-      - name: Deploy
-        id: deploy
-        run: npx sst deploy --stage "$STAGE"
-      - *read-url
+          role-arn: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
+          session-name: sst-foundation-deploy-production
+          region: ${{ inputs.aws-region }}
+      - id: record-start
+        uses: $/.github/actions/record-start
+        with:
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: ${{ inputs.production-stage }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.sha }}
+      - id: deploy
+        uses: $/.github/actions/sst-deploy
+        with:
+          stage: ${{ inputs.production-stage }}
+          url-output: ${{ inputs.smoke-url-output }}
+          site-url-output: ${{ inputs.site-url-output }}
       # Production's job declares `environment:`, so GitHub keeps its own deployment for it and marks it finished when the
       # job ends, which retires every older deployment of the environment, including one recorded here. So this job only
       # collects the facts, and record-production (a later job) records the deployment.
       - name: Collect deployment facts
         id: facts
         if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
-        env:
-          SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
-        run: |
-          echo "account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
-          site=""
-          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
-          echo "site=$site" >> "$GITHUB_OUTPUT"
+        run: echo "account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
   # Failing here means production is already changed: the run goes red (GitHub notifies on failed runs).
   record-production:
@@ -439,46 +344,28 @@ jobs:
     runs-on: *runner
     permissions:
       deployments: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      STAGE: ${{ inputs.production-stage }}
-      OUTCOME: ${{ needs.deploy-production.outputs.outcome }}
-      DEPLOYMENT_ID: ${{ needs.deploy-production.outputs.record-id }}
-      ACCOUNT: ${{ needs.deploy-production.outputs.account }}
-      SITE: ${{ needs.deploy-production.outputs.site }}
-      SITE_URL_OUTPUT: ""
-      APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
-      REGION: ${{ inputs.aws-region }}
-      SHA: ${{ github.sha }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Record GitHub deployment
-        continue-on-error: true
-        run: *record-script
+      - uses: $/.github/actions/record-outcome
+        with:
+          outcome: ${{ needs.deploy-production.outputs.outcome }}
+          deployment-id: ${{ needs.deploy-production.outputs.record-id }}
+          app-name: ${{ inputs.app-name || github.event.repository.name }}
+          stage: ${{ inputs.production-stage }}
+          region: ${{ inputs.aws-region }}
+          sha: ${{ github.sha }}
+          account: ${{ needs.deploy-production.outputs.account }}
+          site: ${{ needs.deploy-production.outputs.site }}
 
   smoke-production:
     needs: deploy-production
     runs-on: *runner
     permissions:
       contents: read
-    env: *smoke-env
     steps:
-      - *checkout
-      - *setup-node
-      - *install
-      - name: Smoke check
-        env:
-          SMOKE_URL: ${{ needs.deploy-production.outputs.url }}
-        run: |
-          if [ -z "$SMOKE_URL" ]; then echo "No smoke URL configured; skipping"; exit 0; fi
-          code=$(curl -sS -o body.json -w '%{http_code}' --retry 5 --retry-delay 3 --retry-all-errors "$SMOKE_URL")
-          echo "HTTP $code"
-          test "$code" = "200"
-          if [ -n "$SMOKE_EXPECT_JQ" ]; then jq -e "$SMOKE_EXPECT_JQ" body.json > /dev/null; fi
-      - name: Smoke command
-        env:
-          SMOKE_URL: ${{ needs.deploy-production.outputs.url }}
-          SMOKE_STAGE: ${{ inputs.production-stage }}
-        run: |
-          if [ -z "$SMOKE_COMMAND" ]; then exit 0; fi
-          bash -c "$SMOKE_COMMAND"
+      - *setup
+      - uses: $/.github/actions/smoke
+        with:
+          url: ${{ needs.deploy-production.outputs.url }}
+          stage: ${{ inputs.production-stage }}
+          expect-jq: ${{ inputs.smoke-expect-jq }}
+          command: ${{ inputs.smoke-command }}

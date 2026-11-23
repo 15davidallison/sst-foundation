@@ -4,6 +4,17 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## v0.6.0
+
+Released 2026-11-23 (tested as v0.6.0-rc.1). CI building blocks. No breaking changes: same inputs, jobs, check names, permissions, OIDC subjects, concurrency groups and deployment records as v0.5.0.
+
+Upgrade: bump `uses:` (and the npm dependency) to `v0.6.0`.
+
+- The steps shared by `app-ci.yml`, `app-ops.yml` and `preview-cleanup.yml` are now composite actions in `.github/actions/`: `setup`, `aws-login`, `record-start`, `sst-deploy`, `record-outcome`, `smoke`. Apps that need a different pipeline can build their own jobs from them (docs/usage.md, "Building blocks"). Each third-party action is pinned in one place.
+- New block `sst-diff`: `sst diff --json` to a file, unmodified, plus its SHA-256, to bind an approval to an exact diff.
+- The missing-secret error (previews) now names the stage generically ("pr-12 needs secret value(s) that are not set on staging: ...").
+- The smoke check writes the response body to `$RUNNER_TEMP/smoke-body.json` instead of `body.json` in the workspace. Only matters if your `smoke-command` read that file.
+
 ## v0.5.0
 
 Released 2026-11-23 (tested as v0.5.0-rc.1 to rc.4). Deployment records and operations (redeploy, rollback, teardown).
