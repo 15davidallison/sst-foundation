@@ -4,6 +4,17 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## v0.7.0
+
+Released 2026-11-23. Account stages. No breaking changes for existing apps.
+
+Upgrade: bump `uses:` (and the npm dependency) to `v0.7.0`.
+
+- New stage kind `acct-<alias>` (`kind: "account"`): one stage per AWS account, for apps that manage account-level resources. Retained, protected, tagged `env=production`; the teardown override never applies.
+- New `AccountStageMap` (`{ accounts: { <alias>: target } }`), accepted by `foundationApp` instead of the usual map. An app with it deploys only `acct-<alias>` stages for listed aliases; an app with the usual map rejects `acct-*` stages.
+- Exported `ACCOUNT_STAGE` (the stage pattern) and the `AccountStageMap` type.
+- `app-ops.yml` still accepts only `production`, `staging`, `dev-<name>` and `pr-<n>`.
+
 ## v0.6.0
 
 Released 2026-11-23 (tested as v0.6.0-rc.1). CI building blocks. No breaking changes: same inputs, jobs, check names, permissions, OIDC subjects, concurrency groups and deployment records as v0.5.0.

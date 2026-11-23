@@ -1,4 +1,4 @@
-import type { Env } from "./stages.ts";
+import { ACCOUNT_STAGE, type Env } from "./stages.ts";
 
 /** Where a stage deploys. Account IDs are non-secret identifiers. */
 export interface Target {
@@ -19,7 +19,27 @@ export interface AccountMap {
   overrides?: Record<string, Target>;
 }
 
-export function resolveTarget(map: AccountMap, stage: string, env: Env): Target {
+/**
+ * For apps with one stage per AWS account (`acct-<alias>`), e.g. account-level IAM: alias -> target.
+ * Such an app deploys only `acct-<alias>` stages, and only for aliases listed here.
+ */
+export interface AccountStageMap {
+  accounts: Record<string, Target>;
+}
+
+export function resolveTarget(map: AccountMap | AccountStageMap, stage: string, env: Env): Target {
+  const alias = ACCOUNT_STAGE.exec(stage)?.[1];
+  if ("accounts" in map) {
+    if (alias === undefined) {
+      throw new Error(`This app deploys only acct-<alias> stages (one per account); got "${stage}".`);
+    }
+    const target = map.accounts[alias];
+    if (!target) throw new Error(`No account "${alias}" in the accounts map (stage "${stage}").`);
+    return target;
+  }
+  if (alias !== undefined) {
+    throw new Error(`Stage "${stage}" is an account stage; it needs an { accounts: { ${alias}: ... } } map.`);
+  }
   return map.overrides?.[stage] ?? map[env];
 }
 

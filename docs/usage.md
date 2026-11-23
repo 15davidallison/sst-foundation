@@ -11,7 +11,7 @@ ships TypeScript source and SST bundles it together with `sst.config.ts`.
 - **`"allowImportingTsExtensions": true`** in the app's `tsconfig.json`, because the package ships `.ts`
   source and your typecheck reads it.
 - **An explicit, valid stage on every SST command.** SST's default stage is your username, which
-  `foundationApp` rejects. Use `--stage production|staging|dev-<name>|pr-<n>`. This includes
+  `foundationApp` rejects. Use `--stage production|staging|dev-<name>|pr-<n>` (or `acct-<alias>`, below). This includes
   `sst install`, which `app-ci.yml` handles for you.
 - **Running locally with `AWS_PROFILE` exported:** use `env -u AWS_PROFILE npx sst ...`, or the profile
   guard will refuse to run.
@@ -36,8 +36,34 @@ The library has no runtime dependencies and no network calls, so nothing else ch
 | `staging` | `staging` | `nonprod` | `remove` | `false` | Long-lived non-prod |
 | `dev-<name>` | `dev` | `nonprod` | `remove` | `false` | `<name>`: lowercase letters, digits, `-`, max 21 chars |
 | `pr-<number>` | `preview` | `nonprod` | `remove` | `false` | `ttlMinutes: 15` |
+| `acct-<alias>` | `account` | `production` | `retain` | `true` | One stage per AWS account; `<alias>`: lowercase letters, digits, `-`, max 30 chars, no leading or trailing `-` |
 
 `ttlMinutes` is advice for a cleanup job; sst-foundation does not delete stages itself.
+
+### Account stages (`acct-<alias>`)
+
+For an app that manages resources belonging to a whole AWS account rather than to one environment (for example
+IAM roles and the GitHub OIDC provider), deploy one stage per account. Give `foundationApp` an `AccountStageMap`
+instead of the usual map:
+
+```ts
+// accounts.ts
+export const accounts = {
+  accounts: {
+    example: { account: "111111111111", profile: "example-power", region: "us-west-2" },
+  },
+};
+```
+
+```sh
+npx sst diff --stage acct-example
+```
+
+- Such an app deploys only `acct-<alias>` stages, and only for aliases in its map. A normal app can't deploy an
+  `acct-*` stage.
+- Account stages are protected and retained like `production`, and tagged `env=production`. The teardown override
+  doesn't apply to them, and `app-ops.yml` rejects them: changes go through the app's own pipeline (see
+  "Building blocks", for example `sst-diff` on pull requests and an approved apply).
 
 ## Tags
 
@@ -291,7 +317,7 @@ async run() {
   token 200 (CI smoke), direct function URL `AWS_IAM` and unsigned 403; removal deleted every CloudFront resource.
   A distribution takes about 3 minutes to create and about 25 to delete.
 - **Verified (2026-11-23, v0.6.0-rc.1 on donut-nook):** blocks referenced with `$/` from a private caller pinned to a tag or branch resolve to sst-foundation at that ref. Preview PR (checks, deploy, smoke, comment, record; cleanup on close with a teardown record), push to `main` (staging, smoke, production, `record-production`, production smoke) and an `ops.yml` staging redeploy all ran with the same records as v0.5.0.
-- **Not verified:** `sst-diff`'s output (that `sst diff --json` prints only JSON on stdout; the block fails if not); the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
+- **Not verified:** an `acct-<alias>` stage on a real deploy (unit-tested only); `sst-diff`'s output (that `sst diff --json` prints only JSON on stdout; the block fails if not); the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
   gate on `staging` of a real app (proven on a preview stage only); whether Dependabot-triggered runs can request
   an OIDC token (previews skip Dependabot regardless).
 
