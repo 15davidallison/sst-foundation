@@ -290,6 +290,7 @@ async run() {
 - **Verified (2026-11-17, non-prod gate on a donut-nook preview):** no or wrong token 401 with a Basic challenge,
   token 200 (CI smoke), direct function URL `AWS_IAM` and unsigned 403; removal deleted every CloudFront resource.
   A distribution takes about 3 minutes to create and about 25 to delete.
+- **Verified (2026-11-23, v0.6.0-rc.1 on donut-nook):** blocks referenced with `$/` from a private caller pinned to a tag or branch resolve to sst-foundation at that ref. Preview PR (checks, deploy, smoke, comment, record; cleanup on close with a teardown record), push to `main` (staging, smoke, production, `record-production`, production smoke) and an `ops.yml` staging redeploy all ran with the same records as v0.5.0.
 - **Not verified:** `sst-diff`'s output (that `sst diff --json` prints only JSON on stdout; the block fails if not); the scheduled TTL sweep (schedules run only on `main`; first app adoption will prove it); the
   gate on `staging` of a real app (proven on a preview stage only); whether Dependabot-triggered runs can request
   an OIDC token (previews skip Dependabot regardless).
