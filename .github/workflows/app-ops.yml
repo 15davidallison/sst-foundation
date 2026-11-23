@@ -165,9 +165,27 @@ jobs:
           role-to-assume: ${{ inputs.role-arn }}
           role-session-name: sst-foundation-ops
           aws-region: ${{ inputs.aws-region }}
+      # Start record (in_progress; action = redeploy | rollback | teardown) so consoles show it while it runs.
+      - &record-start
+        name: Record deployment start
+        id: record-start
+        continue-on-error: true
+        run: &record-start-script |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$ACTION" '{
+              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
+              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress -f log_url="$RUN_URL" -F auto_inactive=false > /dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Started deployment record $id: $APP_NAME $STAGE @ ${SHA:0:7} ($ACTION)"
       - &operate
         name: Operate
         id: deploy
+        env:
+          DEPLOYMENT_ID: ${{ steps.record-start.outputs.id }}
         run: |
           set -euo pipefail
           if [ "$ACTION" = teardown ]; then
@@ -178,6 +196,7 @@ jobs:
               aws s3 rm "s3://$bucket/app/$APP_NAME/$STAGE.json" || true
             fi
             for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$STAGE&per_page=100" --jq '.[].id'); do
+              [ "$id" = "${DEPLOYMENT_ID:-}" ] && continue # our own teardown record gets its final status from the record step
               gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive > /dev/null || echo "::warning::Couldn't mark deployment $id inactive"
             done
           else
@@ -185,25 +204,34 @@ jobs:
           fi
       - &record
         name: Record GitHub deployment
-        if: always() && inputs.action != 'teardown' && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
         continue-on-error: true
         env:
           OUTCOME: ${{ steps.deploy.outcome }}
-        run: |
+          DEPLOYMENT_ID: ${{ steps.record-start.outputs.id }}
+        run: &record-script |
           set -euo pipefail
-          account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
-          site=""
-          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
-          state=failure; [ "$OUTCOME" = success ] && state=success
-          id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$ACTION" '{
-              ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
-              transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
-              payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
-            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          # ACCOUNT / SITE are passed in by the record-production job; otherwise read them here.
+          account=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}
+          site=${SITE:-}
+          if [ -z "$site" ] && [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          action=${ACTION:-deploy}
+          # Final state: a finished teardown is `inactive` (consoles read the record's action, not the state alone).
+          state=failure
+          if [ "$OUTCOME" = success ]; then state=success; [ "$action" = teardown ] && state=inactive; fi
+          id=${DEPLOYMENT_ID:-}
+          if [ -z "$id" ]; then
+            # The start record couldn't be made; record the outcome as a new deployment instead.
+            id=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" --arg action "$action" '{
+                ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: ("sst-foundation " + $action),
+                transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+                payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: $action } }' \
+              | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          fi
           jq -nc --arg s "$state" --arg url "$site" --arg log "$RUN_URL" \
-            '{ state: $s, log_url: $log, auto_inactive: true } + (if $url == "" then {} else { environment_url: $url } end)' \
+            '{ state: $s, log_url: $log, auto_inactive: ($s == "success") } + (if $url == "" or $s == "inactive" then {} else { environment_url: $url } end)' \
             | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - > /dev/null
-          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($state)"
+          echo "Recorded deployment $id: $APP_NAME $STAGE @ ${SHA:0:7} ($action: $state)"
       - &smoke
         name: Smoke check
         if: inputs.action != 'teardown'
@@ -228,6 +256,11 @@ jobs:
     environment:
       name: production # the production role trusts only this environment; deployment branches = main
     permissions: *op-permissions
+    outputs:
+      outcome: ${{ steps.deploy.outcome }}
+      record-id: ${{ steps.record-start.outputs.id }}
+      account: ${{ steps.facts.outputs.account }}
+      site: ${{ steps.facts.outputs.site }}
     concurrency:
       group: deploy-${{ inputs.production-stage }}
       cancel-in-progress: false
@@ -259,6 +292,44 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_PRODUCTION }}
           role-session-name: sst-foundation-ops-production
           aws-region: ${{ inputs.aws-region }}
+      - *record-start
       - *operate
-      - *record
+      # Production's job declares `environment:`, so GitHub keeps its own deployment for it and marks it finished when the
+      # job ends, which retires every older deployment of the environment, including one recorded here. So this job only
+      # collects the facts, and record-production (a later job) records the deployment.
+      - name: Collect deployment facts
+        id: facts
+        if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+        env:
+          SITE_URL_OUTPUT: ${{ inputs.site-url-output }}
+        run: |
+          echo "account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          site=""
+          if [ -n "$SITE_URL_OUTPUT" ] && [ -f .sst/outputs.json ]; then site=$(jq -r --arg k "$SITE_URL_OUTPUT" '.[$k] // empty' .sst/outputs.json); fi
+          echo "site=$site" >> "$GITHUB_OUTPUT"
       - *smoke
+
+  # See app-ci.yml: GitHub's own deployment for the `environment: production` job would retire a record made inside it.
+  record-production:
+    needs: [plan, production]
+    if: always() && needs.production.result != 'skipped' && needs.production.outputs.outcome != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      deployments: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ACTION: ${{ inputs.action }}
+      STAGE: ${{ inputs.stage }}
+      OUTCOME: ${{ needs.production.outputs.outcome }}
+      DEPLOYMENT_ID: ${{ needs.production.outputs.record-id }}
+      ACCOUNT: ${{ needs.production.outputs.account }}
+      SITE: ${{ needs.production.outputs.site }}
+      SITE_URL_OUTPUT: ""
+      APP_NAME: ${{ inputs.app-name || github.event.repository.name }}
+      REGION: ${{ inputs.aws-region }}
+      SHA: ${{ needs.plan.outputs.ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Record GitHub deployment
+        continue-on-error: true
+        run: *record-script

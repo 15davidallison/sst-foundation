@@ -126,6 +126,14 @@ jobs:
               for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$s&per_page=100" --jq '.[].id' 2>/dev/null); do
                 gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive > /dev/null || echo "::warning::Couldn't mark deployment $id inactive"
               done
+              # Explicit teardown record (see app-ops.yml): consoles show "torn down" only on this.
+              tid=$(jq -nc --arg ref "$GITHUB_SHA" --arg env "$s" --arg app "$APP" --arg account "$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)" --arg region "$AWS_REGION" '{
+                  ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "sst-foundation teardown",
+                  transient_environment: true, production_environment: false,
+                  payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: "teardown" } }' \
+                | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id) || true
+              if [ -n "${tid:-}" ]; then gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$tid/statuses" -f state=inactive > /dev/null || true
+              else echo "::warning::Couldn't record the teardown of $s"; fi
             else
               echo "::error::Failed to remove $s"; failed=1
             fi
