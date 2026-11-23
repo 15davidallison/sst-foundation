@@ -180,6 +180,16 @@ jobs:
             for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$STAGE&per_page=100" --jq '.[].id'); do
               gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=inactive > /dev/null || echo "::warning::Couldn't mark deployment $id inactive"
             done
+            # An explicit teardown record: consoles show "torn down" only on this, never on an inactive status alone
+            # (GitHub can retire records by itself, e.g. for a job that declares `environment:`).
+            account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+            tid=$(jq -nc --arg ref "$SHA" --arg env "$STAGE" --arg app "$APP_NAME" --arg account "$account" --arg region "$REGION" '{
+                ref: $ref, environment: $env, auto_merge: false, required_contexts: [], description: "sst-foundation teardown",
+                transient_environment: ($env | startswith("pr-")), production_environment: ($env == "production"),
+                payload: { sstFoundation: 1, app: $app, stage: $env, account: $account, region: $region, action: "teardown" } }' \
+              | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id) || true
+            if [ -n "${tid:-}" ]; then gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$tid/statuses" -f state=inactive -f log_url="$RUN_URL" > /dev/null || true
+            else echo "::warning::Couldn't record the teardown"; fi
           else
             npx sst deploy --stage "$STAGE"
           fi
