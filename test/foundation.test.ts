@@ -20,7 +20,7 @@ test("nonprod stages are removable; previews carry a 15 min TTL", () => {
 });
 
 test("unknown or malformed stage names throw", () => {
-  for (const bad of ["prod", "sandbox", "pr-0", "pr-x", "dev-", "Dev-a", ""]) {
+  for (const bad of ["prod", "sandbox", "pr-0", "pr-x", "dev-", "Dev-a", "", "acct-", "acct-Example", "acct--x", "acct-x-", "acct_example"]) {
     assert.throws(() => classifyStage(bad), /Unknown stage/, bad);
   }
 });
@@ -60,4 +60,27 @@ test("production teardown override: only for the named app's production, and dat
   const lifted = prod({ SST_FOUNDATION_TEARDOWN: "a/production" });
   assert.equal(lifted.protect, false);
   assert.equal(lifted.removal, "retain");
+});
+
+test("acct-<alias> stages are retained, protected and tagged production", () => {
+  const p = classifyStage("acct-example");
+  assert.deepEqual([p.kind, p.env, p.removal, p.protect], ["account", "production", "retain", true]);
+});
+
+test("account stages resolve only through an accounts map, and only for listed aliases", () => {
+  const other = { ...sandbox, account: "222222222222" };
+  const byAccount = { accounts: { example: other } };
+  const app = foundationApp({ name: "a", client: "c", accounts: byAccount }, { stage: "acct-example" }, {});
+  assert.deepEqual(app.providers.aws.allowedAccountIds, ["222222222222"]);
+  assert.equal(app.protect, true);
+  assert.equal(app.removal, "retain");
+  assert.throws(() => foundationApp({ name: "a", client: "c", accounts: byAccount }, { stage: "acct-missing" }, {}), /No account "missing"/);
+  assert.throws(() => foundationApp({ name: "a", client: "c", accounts: byAccount }, { stage: "staging" }, {}), /only acct-<alias>/);
+  assert.throws(() => foundationApp({ name: "a", client: "c", accounts }, { stage: "acct-example" }, {}), /needs an \{ accounts/);
+});
+
+test("the teardown override never lifts protection on an account stage", () => {
+  const byAccount = { accounts: { example: sandbox } };
+  const app = foundationApp({ name: "a", client: "c", accounts: byAccount }, { stage: "acct-example" }, { SST_FOUNDATION_TEARDOWN: "a/production" });
+  assert.equal(app.protect, true);
 });

@@ -1,4 +1,4 @@
-import { type AccountMap, assertProfile, resolveTarget } from "./accounts.ts";
+import { type AccountMap, type AccountStageMap, assertProfile, resolveTarget } from "./accounts.ts";
 import { classifyStage } from "./stages.ts";
 import { defaultTags } from "./tags.ts";
 
@@ -7,7 +7,8 @@ export interface FoundationAppOptions {
   name: string;
   /** Client slug, e.g. "acme". Also the `client` tag. */
   client: string;
-  accounts: AccountMap;
+  /** Stage -> account. `AccountStageMap` for an app with one `acct-<alias>` stage per account. */
+  accounts: AccountMap | AccountStageMap;
 }
 
 /**
