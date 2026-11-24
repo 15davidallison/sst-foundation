@@ -4,6 +4,22 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## v0.8.0
+
+Released 2026-11-24. **Security fix** for previews. No input changes.
+
+Upgrade: bump `uses:` (and the npm dependency) to `v0.8.0`. **Before** your next preview deploy, check that no secret
+on the preview base stage (normally `staging`) spans several lines; store any that do on one line (e.g. base64) and
+decode in your app.
+
+- The preview's copy of base-stage secrets no longer leaks values. Before, a value spanning several lines (a PEM
+  private key) was misread by `sst secret load`, which printed part of it in the job log as a "secret name". The copy
+  now refuses any multi-line value and copies nothing. It logs only counts, never names or values; `sst secret load`'s
+  output is hidden except its error lines. If you ran a preview with a multi-line secret on an earlier version, delete
+  that run's logs and rotate the secret.
+- New block `copy-secrets` (`from`, `to`, `production-stage`): the same copy, usable in your own jobs. Refuses a
+  production stage as `from`.
+
 ## v0.7.0
 
 Released 2026-11-23. Account stages. No breaking changes for existing apps.

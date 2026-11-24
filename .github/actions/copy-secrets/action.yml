@@ -1,0 +1,27 @@
+name: copy-secrets
+description: >-
+  Copy one stage's SST secret values to another (previews inherit the base stage's). Never prints a value; refuses a
+  value that spans several lines (store those on one line, e.g. base64). See copy.sh.
+inputs:
+  from:
+    description: Stage to copy from. Must not be a production stage.
+    required: true
+  to:
+    description: Stage to copy to
+    required: true
+  production-stage:
+    description: The app's production stage name (refused as `from`, like `production`)
+    default: production
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BASE_STAGE: ${{ inputs.from }}
+        STAGE: ${{ inputs.to }}
+        PRODUCTION_STAGE: ${{ inputs.production-stage }}
+      run: |
+        if [ "$BASE_STAGE" = production ] || [ "$BASE_STAGE" = "$PRODUCTION_STAGE" ]; then
+          echo "::error::Secrets must not be copied from a production stage ($BASE_STAGE)"; exit 1
+        fi
+        "$GITHUB_ACTION_PATH/copy.sh"

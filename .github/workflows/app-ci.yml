@@ -208,18 +208,14 @@ jobs:
           region: ${{ inputs.aws-region }}
           sha: ${{ github.event.pull_request.head.sha }}
       # Previews inherit the base stage's (normally staging) secret values; no per-preview secrets to set.
-      # Values go through a 0600 temp file and are never printed. A secret missing on the base stage is reported by the deploy.
+      # Never prints a value; a multi-line value stops the copy (store it on one line). A secret missing on the base
+      # stage is reported by the deploy.
       - name: Copy base-stage secrets to preview
-        run: |
-          set -euo pipefail
-          if [ "$BASE_STAGE" = production ] || [ "$BASE_STAGE" = "$PRODUCTION_STAGE" ]; then
-            echo "::error::preview-base-stage must not be a production stage"; exit 1
-          fi
-          umask 077
-          f="$RUNNER_TEMP/preview-secrets.env"
-          trap 'rm -f "$f"' EXIT
-          npx sst secret list --stage "$BASE_STAGE" > "$f"
-          if [ -s "$f" ]; then npx sst secret load --stage "$STAGE" "$f"; else echo "Base stage $BASE_STAGE has no secret values"; fi
+        uses: $/.github/actions/copy-secrets
+        with:
+          from: ${{ inputs.preview-base-stage }}
+          to: pr-${{ github.event.number }}
+          production-stage: ${{ inputs.production-stage }}
       - id: deploy
         uses: $/.github/actions/sst-deploy
         with:
