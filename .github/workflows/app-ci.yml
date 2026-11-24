@@ -223,14 +223,16 @@ jobs:
           url-output: ${{ inputs.smoke-url-output }}
           site-url-output: ${{ inputs.site-url-output }}
           secrets-from: ${{ inputs.preview-base-stage }}
-      - if: always() && steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''
+      # Also when a step between the record and the deploy failed (the secret copy): the deploy never ran, so the
+      # record gets `failure`. Before v0.8.0 it stayed in_progress forever ("Coming online" in consoles).
+      - if: always() && (steps.record-start.outputs.id != '' || (steps.deploy.outcome != 'skipped' && steps.deploy.outcome != ''))
         uses: $/.github/actions/record-outcome
         with:
           app-name: ${{ inputs.app-name || github.event.repository.name }}
           stage: pr-${{ github.event.number }}
           region: ${{ inputs.aws-region }}
           sha: ${{ github.event.pull_request.head.sha }}
-          outcome: ${{ steps.deploy.outcome }}
+          outcome: ${{ (steps.deploy.outcome == '' || steps.deploy.outcome == 'skipped') && 'failure' || steps.deploy.outcome }}
           deployment-id: ${{ steps.record-start.outputs.id }}
           site-url-output: ${{ inputs.site-url-output }}
 

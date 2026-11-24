@@ -17,6 +17,7 @@ decode in your app.
   now refuses any multi-line value and copies nothing. It logs only counts, never names or values; `sst secret load`'s
   output is hidden except its error lines. If you ran a preview with a multi-line secret on an earlier version, delete
   that run's logs and rotate the secret.
+- A preview whose job fails before the deploy (e.g. the secret copy) now marks its deployment record `failure`. Before, the record stayed `in_progress` forever and consoles showed it as coming online. Old stuck records aren't touched; mark them by hand if they bother you.
 - New block `copy-secrets` (`from`, `to`, `production-stage`): the same copy, usable in your own jobs. Refuses a
   production stage as `from`.
 
