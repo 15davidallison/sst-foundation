@@ -37,15 +37,17 @@ exit 2
 const FAKE_KEY = ["-----BEGIN FAKE KEY-----", "QUJDREVGR0hJSktMTU5PUA/fakeline1", "UVJTVFVWV1hZWg==", "-----END FAKE KEY-----"].join("\n");
 
 it("copies single-line secrets and logs only their names", () => {
-  const r = run("AppId=fake-123\nToken=fake=with=equals\n");
+  // Real `sst secret list` output: a `# <app>/<stage>` header and blank lines around the values.
+  const list = "# offering/staging\nAppId=fake-123\n\nToken=fake=with=equals\n\n";
+  const r = run(list);
   assert.equal(r.status, 0, r.log);
-  assert.equal(r.loaded, "AppId=fake-123\nToken=fake=with=equals\n");
+  assert.equal(r.loaded, list);
   assert.match(r.log, /Copied 2 secret value\(s\) from staging to pr-7/);
   assert.doesNotMatch(r.log, /AppId|Token|fake-123|with=equals|Setting/);
 });
 
 it("refuses a multi-line value, copies nothing and never prints its lines", () => {
-  const r = run(`AppId=fake-123\nPrivateKey=${FAKE_KEY}\nOther=fake-456\n`);
+  const r = run(`# offering/staging\nAppId=fake-123\nPrivateKey=${FAKE_KEY}\nOther=fake-456\n`);
   assert.equal(r.status, 1);
   assert.equal(r.loaded, null);
   assert.match(r.log, /spans several lines \(2 line\(s\) don't start with NAME=\)/);
