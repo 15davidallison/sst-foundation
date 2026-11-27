@@ -189,6 +189,7 @@ jobs:
       cancel-in-progress: true # a newer push supersedes; an interrupted preview is disposable
     outputs:
       url: ${{ steps.deploy.outputs.url }}
+      site: ${{ steps.deploy.outputs.site }}
     env:
       STAGE: pr-${{ github.event.number }}
       BASE_STAGE: ${{ inputs.preview-base-stage }}
@@ -252,10 +253,11 @@ jobs:
           command: ${{ inputs.smoke-command }}
           nonprod-token: ${{ secrets.nonprod-token }}
       - name: Comment preview URL
-        if: always() && inputs.preview-comment && needs.preview.outputs.url != ''
+        if: always() && inputs.preview-comment && (needs.preview.outputs.site != '' || needs.preview.outputs.url != '')
         env:
           GH_TOKEN: ${{ github.token }}
-          URL: ${{ needs.preview.outputs.url }}
+          # The site's home page (site-url-output), not the smoke check's URL (often a health endpoint).
+          URL: ${{ needs.preview.outputs.site || needs.preview.outputs.url }}
           PR: ${{ github.event.number }}
           SMOKE: ${{ job.status }}
         run: |

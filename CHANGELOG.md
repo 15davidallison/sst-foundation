@@ -12,6 +12,7 @@ Upgrade: bump `uses:` (and the npm dependency). Apps that pass their own `ttl-mi
 
 - `preview-cleanup.yml`'s `ttl-minutes` defaults to 1440 (24 h), up from 15, so a preview can be reviewed across a day. `PREVIEW_TTL_MINUTES` / `classifyStage("pr-<n>").ttlMinutes` match.
 - The preview PR comment now says "about 24 hours after the last push, or when the PR closes".
+- The preview PR comment links the site (`site-url-output`), not the smoke check's URL. Before, apps whose smoke check hits a health endpoint (e.g. `/api`) got that endpoint as the preview link.
 - The example sweep schedule is hourly (`0 * * * *`); a 15-minute sweep is wasted work with a 24 h TTL. Existing `*/15` schedules still work.
 
 ## v0.8.0
