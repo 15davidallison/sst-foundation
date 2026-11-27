@@ -4,6 +4,16 @@ Release notes per released version (not per commit). Apps pin a tag; read the en
 Each entry summarizes what changed for consumers; breaking changes are marked **BREAKING** with
 upgrade steps.
 
+## Unreleased
+
+Preview TTL is now 24 hours. No breaking changes.
+
+Upgrade: bump `uses:` (and the npm dependency). Apps that pass their own `ttl-minutes` keep it.
+
+- `preview-cleanup.yml`'s `ttl-minutes` defaults to 1440 (24 h), up from 15, so a preview can be reviewed across a day. `PREVIEW_TTL_MINUTES` / `classifyStage("pr-<n>").ttlMinutes` match.
+- The preview PR comment now says "about 24 hours after the last push, or when the PR closes".
+- The example sweep schedule is hourly (`0 * * * *`); a 15-minute sweep is wasted work with a 24 h TTL. Existing `*/15` schedules still work.
+
 ## v0.8.0
 
 Released 2026-11-24. **Security fix** for previews. No input changes.

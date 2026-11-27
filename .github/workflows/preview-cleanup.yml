@@ -1,7 +1,7 @@
 # Removes preview stages (`pr-<n>`). Call it from the app, in a small workflow of its own:
 #
 #   on:
-#     schedule: [{ cron: "*/15 * * * *" }]       # TTL sweep (runs on main)
+#     schedule: [{ cron: "0 * * * *" }]          # hourly TTL sweep (runs on main)
 #     pull_request: { types: [closed] }          # remove that PR's preview now
 #   permissions: { contents: read }
 #   jobs:
@@ -35,7 +35,7 @@ on:
         default: ""
       ttl-minutes:
         type: number
-        default: 15
+        default: 1440 # 24 h
       aws-region:
         type: string
         default: us-west-2

@@ -260,7 +260,7 @@ jobs:
           SMOKE: ${{ job.status }}
         run: |
           marker='<!-- sst-foundation-preview -->'
-          body="$marker"$'\n'"Preview \`pr-$PR\`: $URL"$'\n'"Smoke: $SMOKE. Removed automatically about 15 minutes after the last push."
+          body="$marker"$'\n'"Preview \`pr-$PR\`: $URL"$'\n'"Smoke: $SMOKE. Removed automatically about 24 hours after the last push, or when the PR closes."
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
           if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
           else gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null; fi

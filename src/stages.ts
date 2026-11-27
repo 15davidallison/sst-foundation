@@ -13,7 +13,7 @@ export interface StagePolicy {
   ttlMinutes?: number;
 }
 
-export const PREVIEW_TTL_MINUTES = 15;
+export const PREVIEW_TTL_MINUTES = 1440; // 24 h: long enough to review a preview across a day
 
 const DEV_STAGE = /^dev-[a-z0-9][a-z0-9-]{0,20}$/;
 const PREVIEW_STAGE = /^pr-[1-9][0-9]*$/;

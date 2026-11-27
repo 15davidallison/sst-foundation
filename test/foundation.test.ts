@@ -10,12 +10,12 @@ test("production is retained and protected", () => {
   assert.deepEqual([p.env, p.removal, p.protect], ["production", "retain", true]);
 });
 
-test("nonprod stages are removable; previews carry a 15 min TTL", () => {
+test("nonprod stages are removable; previews carry a 24 h TTL", () => {
   assert.equal(classifyStage("staging").env, "nonprod");
   assert.equal(classifyStage("dev-alice").kind, "dev");
   const pr = classifyStage("pr-42");
   assert.equal(pr.kind, "preview");
-  assert.equal(pr.ttlMinutes, 15);
+  assert.equal(pr.ttlMinutes, 1440);
   assert.equal(pr.removal, "remove");
 });
 
