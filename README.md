@@ -5,7 +5,7 @@ account targeting and CI/CD by calling one function and one reusable workflow, i
 them per app.
 
 - **Stages with built-in policy.** `production` (retained, protected), `staging`, `dev-<name>`, and
-  per-PR `pr-<n>` previews (15 min TTL), plus `acct-<alias>` (one protected stage per AWS account) for apps
+  per-PR `pr-<n>` previews (24 h TTL), plus `acct-<alias>` (one protected stage per AWS account) for apps
   that manage account-level resources. Any other name is rejected, so a typo can't create a stray environment.
 - **Required tags on every resource:** `client`, `app`, `env`, `stage`, `managed-by`. Prod and non-prod
   can share an AWS account and still be separable in cost reports.
